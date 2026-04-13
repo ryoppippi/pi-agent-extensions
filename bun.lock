@@ -4,10 +4,6 @@
   "workspaces": {
     "": {
       "name": "pi-agent-extensions",
-      "dependencies": {
-        "@marckrenn/pi-sub-bar": "*",
-        "@marckrenn/pi-sub-core": "*",
-      },
       "peerDependencies": {
         "@mariozechner/pi-agent-core": "*",
         "@mariozechner/pi-ai": "*",
@@ -22,9 +18,6 @@
         "@mozilla/readability": "^0.5.0",
         "jsdom": "^26.0.0",
       },
-    },
-    "slow-mode": {
-      "name": "pae-slow-mode",
     },
   },
   "packages": {
@@ -121,12 +114,6 @@
     "@isaacs/brace-expansion": ["@isaacs/brace-expansion@5.0.0", "", { "dependencies": { "@isaacs/balanced-match": "^4.0.1" } }, ""],
 
     "@isaacs/cliui": ["@isaacs/cliui@8.0.2", "", { "dependencies": { "string-width": "^5.1.2", "string-width-cjs": "npm:string-width@^4.2.0", "strip-ansi": "^7.0.1", "strip-ansi-cjs": "npm:strip-ansi@^6.0.1", "wrap-ansi": "^8.1.0", "wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0" } }, ""],
-
-    "@marckrenn/pi-sub-bar": ["@marckrenn/pi-sub-bar@1.0.3", "", { "dependencies": { "@marckrenn/pi-sub-shared": "^1.0.3" }, "peerDependencies": { "@mariozechner/pi-coding-agent": "*" } }, ""],
-
-    "@marckrenn/pi-sub-core": ["@marckrenn/pi-sub-core@1.0.3", "", { "dependencies": { "@marckrenn/pi-sub-shared": "^1.0.3" }, "peerDependencies": { "@mariozechner/pi-coding-agent": "*" } }, ""],
-
-    "@marckrenn/pi-sub-shared": ["@marckrenn/pi-sub-shared@1.0.3", "", {}, ""],
 
     "@mariozechner/clipboard": ["@mariozechner/clipboard@0.3.2", "", { "optionalDependencies": { "@mariozechner/clipboard-linux-x64-gnu": "0.3.2", "@mariozechner/clipboard-linux-x64-musl": "0.3.2" } }, ""],
 
@@ -433,8 +420,6 @@
     "package-json-from-dist": ["package-json-from-dist@1.0.1", "", {}, ""],
 
     "pae-fetch": ["pae-fetch@workspace:fetch"],
-
-    "pae-slow-mode": ["pae-slow-mode@workspace:slow-mode"],
 
     "parse5": ["parse5@7.3.0", "", { "dependencies": { "entities": "^6.0.0" } }, "sha512-IInvU7fabl34qmi9gY8XOVxhYyMyuH2xUNpb2q8/Y+7552KlejkRvqvD19nMoUW/uQGGbqNpA6Tufu5FL5BZgw=="],
 

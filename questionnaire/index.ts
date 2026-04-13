@@ -13,6 +13,7 @@ import {
   matchesKey,
   Text,
   truncateToWidth,
+  wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 
@@ -396,6 +397,19 @@ export default function questionnaire(pi: ExtensionAPI) {
             // Helper to add truncated line
             const add = (s: string) => lines.push(truncateToWidth(s, width));
 
+            // Helper to add a wrapped block. Honours explicit newlines and
+            // wraps long lines to the available width instead of truncating
+            // them with an ellipsis, so multi-line prompts display in full.
+            const addWrapped = (s: string, indent = " ") => {
+              const avail = Math.max(1, width - indent.length);
+              const wrapped = wrapTextWithAnsi(s, avail);
+              if (wrapped.length === 0) {
+                lines.push(indent);
+                return;
+              }
+              for (const line of wrapped) lines.push(indent + line);
+            };
+
             add(theme.fg("accent", "─".repeat(width)));
 
             // Tab bar (multi-question only)
@@ -452,7 +466,7 @@ export default function questionnaire(pi: ExtensionAPI) {
 
             // Content
             if (inputMode && q) {
-              add(theme.fg("text", ` ${q.prompt}`));
+              addWrapped(theme.fg("text", q.prompt));
               lines.push("");
               // Show options for reference
               renderOptions();
@@ -488,7 +502,7 @@ export default function questionnaire(pi: ExtensionAPI) {
                 add(theme.fg("warning", ` Unanswered: ${missing}`));
               }
             } else if (q) {
-              add(theme.fg("text", ` ${q.prompt}`));
+              addWrapped(theme.fg("text", q.prompt));
               lines.push("");
               renderOptions();
             }
