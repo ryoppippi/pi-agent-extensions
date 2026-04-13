@@ -72,12 +72,48 @@ function run(cmd: string, args: string[], timeoutMs = 300): Promise<string | nul
 			clearTimeout(timer);
 			resolve(r);
 		};
-		const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"] });
+		// detached: the child leads its own process group, so the timeout below
+		// can signal the entire tree. Without it we can only reach the direct
+		// child, and any grandchild it is blocked on survives us.
+		const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"], detached: true });
 		proc.stdout.on("data", (d) => (stdout += d.toString()));
 		proc.on("close", (code) => finish(code === 0 ? stdout.trim() : null));
 		proc.on("error", () => finish(null));
+		const signalGroup = (sig: NodeJS.Signals) => {
+			const pid = proc.pid;
+			try {
+				if (pid === undefined) throw new Error("no pid");
+				// Negative pid targets the group. Safe because `detached` made the
+				// child its own group leader (pgid === pid), so this can never
+				// reach our own group.
+				process.kill(-pid, sig);
+			} catch {
+				try {
+					proc.kill(sig);
+				} catch {
+					// Already gone.
+				}
+			}
+		};
 		const timer = setTimeout(() => {
-			proc.kill();
+			// Signal the group, not just the direct child. jj shells out to gpg to
+			// sign commits; signalling only jj leaves a blocked gpg orphaned and
+			// reparented to init, where it holds a gpg-agent connection forever.
+			// At one leak per render that exhausts the agent's accept backlog, and
+			// every subsequent gpg client -- including the shell startup hook --
+			// then blocks in connect().
+			//
+			// SIGTERM before SIGKILL: git may be mid-write on .git/index here, and
+			// SIGKILL would strand an index.lock that breaks later git commands.
+			// A wedged gpg dies on SIGTERM perfectly well -- the original bug was
+			// never that it ignored the signal, only that it never received one.
+			signalGroup("SIGTERM");
+			const escalate = setTimeout(() => {
+				// Re-check liveness: without this we could signal a recycled pid.
+				if (proc.exitCode === null && proc.signalCode === null) signalGroup("SIGKILL");
+			}, 200);
+			// Never let the escalation hold the event loop open.
+			escalate.unref?.();
 			finish(null);
 		}, timeoutMs);
 	});
@@ -86,8 +122,17 @@ function run(cmd: string, args: string[], timeoutMs = 300): Promise<string | nul
 // ── jj ───────────────────────────────────────────────────────────────────
 
 async function fetchJj(): Promise<VcsStatus | null> {
+	// --ignore-working-copy keeps this read-only. Without it, every render
+	// snapshots the working copy, which rewrites the working-copy commit --
+	// and under signing.behavior="own" a rewrite means a GPG signature, so a
+	// statusline refresh becomes a YubiKey touch (or an indefinite hang when
+	// the key is absent). Upstream jj recommends the flag for exactly this
+	// case. Cost: counts reflect the last real jj operation and can lag until
+	// the next jj command -- acceptable, because a status display must never
+	// mutate the repo it is reporting on.
 	const logLine = await run("jj", [
 		"log",
+		"--ignore-working-copy",
 		"--no-graph",
 		"--limit",
 		"1",
@@ -100,7 +145,7 @@ async function fetchJj(): Promise<VcsStatus | null> {
 	const bookmarks = (bookmarksStr ?? "").split(",").filter(Boolean);
 	const head = bookmarks[0] ?? changeId ?? null;
 
-	const status = await run("jj", ["diff", "--summary"], 500);
+	const status = await run("jj", ["diff", "--ignore-working-copy", "--summary"], 500);
 	let modified = 0;
 	let added = 0;
 	let removed = 0;
