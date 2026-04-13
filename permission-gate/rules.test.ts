@@ -13,7 +13,7 @@
 import { describe, expect, test } from "bun:test";
 import { compileRules, sanitizeConfig } from "./config.ts";
 import type { RuleEntry } from "./types.ts";
-import { matchRules } from "./match.ts";
+import { matchEvidence, matchRules } from "./match.ts";
 import { searchPaths } from "./builtin-rules.ts";
 import { anyCmd, hasFlag } from "./helpers.ts";
 import { deferredScripts, nestedScripts, pipelines, SHELLS, simpleCommands, unwrap, unwrapSteps } from "./shell.ts";
@@ -1389,6 +1389,63 @@ describe("documented non-goals", () => {
 		["make SHELL=/bin/dangerous", []],
 		["LESSOPEN='|rm -rf / %s' less f", []],
 	]);
+});
+
+// ── matched fragment ─────────────────────────────────────────────────────
+// The prompt names the rule that fired; on a long command the label alone
+// ({"recursive delete"} against 40 lines of script) does not say *where*.
+// matchEvidence answers that, best effort — never throwing, and never
+// multi-line, so it cannot break the prompt layout.
+describe("matched fragment (prompt evidence)", () => {
+	const evidence = (cmd: string) =>
+		matchRules(cmd, RULES).map((r) => matchEvidence(cmd, r));
+
+	test("argv rules report the pipeline that matched", () => {
+		expect(evidence("ls -la && rm -rf /srv/data")).toEqual(["rm -rf /srv/data"]);
+	});
+
+	test("the fragment is the deep one, not the outer command", () => {
+		expect(evidence("bash -c 'cd /tmp && rm -rf build'")).toEqual(["rm -rf build"]);
+	});
+
+	test("regex rules report the text they matched", () => {
+		const cmd = "echo '{}' > ~/.config/pi-agent-extensions/permission-gate/rules.json";
+		expect(evidence(cmd)).toEqual(["pi-agent-extensions/permission-gate"]);
+	});
+
+	test("one fragment per matched rule, in rule order", () => {
+		const matched = matchRules("sudo rm -rf /srv", RULES);
+		expect(matched.map((r) => [r.label, matchEvidence("sudo rm -rf /srv", r)])).toEqual([
+			["recursive delete", "sudo rm -rf /srv"],
+			["sudo", "sudo rm -rf /srv"],
+		]);
+	});
+
+	test("fragments are single-line and bounded", () => {
+		const cmd = `rm -rf \\\n  '${"a".repeat(400)}'`;
+		const [only] = evidence(cmd);
+		expect(only).not.toContain("\n");
+		expect(only!.length).toBeLessThanOrEqual(200);
+		expect(only!.endsWith("…")).toBe(true);
+	});
+
+	test("a /g pattern is not skipped by its own lastIndex", () => {
+		const rules = compileRules({
+			userCode: { extraRules: [{ label: "noisy", pattern: "danger", flags: "gi" }] },
+			userJson: {}, project: {},
+		});
+		const rule = rules.find((r) => r.label === "noisy")!;
+		expect(matchEvidence("danger danger", rule)).toBe("danger");
+		expect(matchEvidence("danger danger", rule)).toBe("danger"); // and again
+	});
+
+	test("a throwing rule yields no fragment instead of breaking the prompt", () => {
+		const rule = {
+			label: "boom", action: "prompt", source: "user-code", kind: "argv",
+			test: () => { throw new Error("boom"); },
+		} as const;
+		expect(matchEvidence("rm -rf /", rule)).toBeUndefined();
+	});
 });
 
 // ── rule groups ──────────────────────────────────────────────────────────

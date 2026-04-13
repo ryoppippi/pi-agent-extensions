@@ -181,6 +181,22 @@ Every bash command the agent wants to run is checked against a list of rules fir
 
 Rules understand shell syntax rather than matching text blindly. The extension parses each command into the programs it actually runs, so =echo "sudo x"= does /not/ trip the sudo rule (it only prints), while =$(sudo id)= does (it runs sudo). Quoting, environment prefixes, pipes, heredocs and command substitution are all handled.
 
+The prompt always says what it is stopping you for. It names each rule that fired and the fragment of the command that fired it, then shows the command itself — wrapped, never cut off mid-line, and trimmed to fit the terminal so that a 200-line heredoc cannot push the reason off the top of the screen:
+
+#+begin_example
+⚠️ Dangerous command (recursive delete, sudo)
+  ↳ recursive delete: rm -rf /srv/data
+  ↳ sudo: sudo systemctl restart app
+cd /srv && ./deploy.sh --prune \\
+  --keep 3
+… 38 more lines (not shown)
+
+> Yes
+  No
+
+Enter allow • ↓ No • Esc block
+#+end_example
+
 *The built-in rules*
 
 Rules are organized into seven groups. Turn a whole group off with =/gate off <group>= rather than editing rules one by one:

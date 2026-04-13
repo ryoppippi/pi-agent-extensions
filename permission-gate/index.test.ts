@@ -12,7 +12,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { EVENTS } from "./types.ts";
-import { showReviewPrompt } from "./ui.ts";
+import { commandLines, showReviewPrompt } from "./ui.ts";
 import { mergeUserJson } from "./config.ts";
 import permissionGate from "./index.ts";
 
@@ -181,6 +181,87 @@ describe("review prompt defaults to Yes", () => {
 		component.handleInput("\x1b[A"); // up → back to Yes
 		component.handleInput("\r");
 		expect(await result).toEqual({ allow: true });
+	});
+});
+
+// pi renders transcript and prompt as one buffer and shows its tail, so a
+// prompt taller than the terminal scrolls its own top away — and the top is
+// the header naming the rule that fired. The command block therefore has a
+// budget, and the fragment that tripped the rule is shown next to the label
+// rather than left to be found in the command.
+describe("the prompt always shows what it is blocking about", () => {
+	type Component = { render(width: number): string[]; handleInput(data: string): void };
+
+	const renderPrompt = (
+		command: string,
+		matches: { label: string; evidence?: string }[] = [],
+		rows = 24,
+		width = 80,
+	) => {
+		let component: Component | undefined;
+		const tui = { requestRender() {}, terminal: { rows, columns: width } };
+		const ctx = {
+			hasUI: true,
+			ui: {
+				custom<T>(factory: (t: unknown, theme: unknown, kb: unknown, done: (r: T) => void) => unknown): Promise<T> {
+					return new Promise<T>((resolve) => {
+						component = factory(tui, fakeTheme, undefined, resolve) as Component;
+					});
+				},
+			},
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		} as any;
+		void showReviewPrompt(ctx, command, matches.map((m) => m.label).join(", ") || "sudo", undefined, matches);
+		return { component: component!, lines: component!.render(width) };
+	};
+
+	test("a 200-line command still fits on screen, header first", () => {
+		const command = Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n");
+		const { component, lines } = renderPrompt(command, [{ label: "sudo" }]);
+		expect(lines.length).toBeLessThanOrEqual(24);
+		expect(lines[1]).toContain("Dangerous command");
+		expect(lines.join("\n")).toContain("more lines (not shown)");
+		// The reason editor must not push the header off either.
+		component.handleInput("\x1b[B"); // down → No, editor appears
+		const withEditor = component.render(80);
+		expect(withEditor.length).toBeLessThanOrEqual(24);
+		expect(withEditor[1]).toContain("Dangerous command");
+	});
+
+	test("a short command is shown in full, on its own lines", () => {
+		const { lines } = renderPrompt("git push --force\ngit clean -fdx", [{ label: "force push" }]);
+		expect(lines.some((l) => l.includes("git push --force"))).toBe(true);
+		expect(lines.some((l) => l.includes("git clean -fdx"))).toBe(true);
+		expect(lines.join("\n")).not.toContain("more lines");
+	});
+
+	test("the matched fragment is named next to the rule", () => {
+		const command = `python3 - <<'PY'\n${"x = 1\n".repeat(50)}PY`;
+		const { lines } = renderPrompt(command, [{ label: "recursive delete", evidence: "rm -rf /srv/data" }]);
+		expect(lines[2]).toContain("recursive delete");
+		expect(lines[2]).toContain("rm -rf /srv/data");
+	});
+
+	test("the fragment is dropped when it is the whole command", () => {
+		const { lines } = renderPrompt("sudo id", [{ label: "sudo", evidence: "sudo id" }]);
+		expect(lines.filter((l) => l.includes("sudo id")).length).toBe(1);
+	});
+
+	// Ellipsizing a long line hides the tail — which is where the dangerous
+	// argument (the path being deleted, the host being pushed to) lives.
+	test("long lines wrap instead of being cut off", () => {
+		const command = `rm -rf ${"a".repeat(100)}/data`;
+		const { lines } = commandLines(command, 40, 10);
+		expect(lines.length).toBeGreaterThan(1);
+		expect(lines.join("")).toContain("/data");
+		for (const line of lines) expect(line.length).toBeLessThanOrEqual(40);
+	});
+
+	test("the budget counts display lines, not source lines", () => {
+		const command = Array.from({ length: 5 }, () => "b".repeat(100)).join("\n");
+		const { lines, hidden } = commandLines(command, 22, 6);
+		expect(lines.length).toBe(5);
+		expect(hidden).toBe(20); // 5 source lines × 5 display lines each, minus 5 kept
 	});
 });
 

@@ -25,7 +25,7 @@ import { EVENTS, type CompiledRule, type GateHelpers, type WarnFn } from "./type
 import { searchPaths } from "./builtin-rules.ts";
 import { anyCmd, hasFlag } from "./helpers.ts";
 import { deferredScripts, nestedScripts, pipelines, SHELLS, simpleCommands, unwrap, unwrapSteps } from "./shell.ts";
-import { matchRules } from "./match.ts";
+import { matchEvidence, matchRules } from "./match.ts";
 import { compileRules, type ConfigLayers, loadConfig, saveUserJson } from "./config.ts";
 import { showReviewPrompt } from "./ui.ts";
 
@@ -109,7 +109,8 @@ export default function permissionGate(pi: ExtensionAPI) {
 		// showReviewPrompt emits EVENTS.waiting itself, *after* arming its
 		// EVENTS.respond listener — emitting it here lost the answer of any
 		// responder that reacted synchronously.
-		const result = await showReviewPrompt(ctx, command, labels, pi.events);
+		const matches = prompts.map((r) => ({ label: r.label, evidence: matchEvidence(command, r) }));
+		const result = await showReviewPrompt(ctx, command, labels, pi.events, matches);
 		pi.events.emit(EVENTS.resolved);
 
 		return result.allow ? undefined : { block: true, reason: result.reason };

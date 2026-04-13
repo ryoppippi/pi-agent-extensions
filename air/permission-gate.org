@@ -109,6 +109,17 @@ Agent calls bash: git push --force origin main
   ↑↓ • Enter • Esc block
 #+end_example
 
+For a long or multi-line command the prompt also names the fragment that
+matched, and trims the command to fit:
+
+#+begin_example
+  ⚠️ Dangerous command (recursive delete)
+    ↳ recursive delete: rm -rf "$WORKDIR"
+  cd /tmp && python3 - <<'PY'
+  import pathlib
+  … 38 more lines (not shown)
+#+end_example
+
 Selecting "No" opens an inline editor:
 
 #+begin_example
@@ -157,6 +168,20 @@ Both can run simultaneously. permission-gate fires first (earlier in =package.js
 
 * Implementation Notes
 
+** Prompt Layout
+
+pi renders the transcript and the prompt into one buffer and shows its
+tail, so a prompt taller than the terminal loses its /top/ lines — the
+header naming the rule that fired. The command block is therefore
+budgeted (=rows - chrome=, clamped to 3–20 display lines) and long lines
+wrap rather than ellipsize, so the "why" survives any command length.
+
+The matched fragment comes from =matchEvidence= (=match.ts=), which
+re-runs the matched rule for display: the matching pipeline for argv
+rules, the matched text for regex rules. It is best-effort — never
+throws, always single-line and bounded — and the label alone is shown
+when no fragment can be attributed.
+
 ** Error Handling
 
 - Invalid JSON in config file → warns user, uses empty config (defaults apply).
@@ -166,3 +191,9 @@ Both can run simultaneously. permission-gate fires first (earlier in =package.js
 ** Config Directory
 
 Follows the convention in =.ref/config-dir.org=. Config at =~/.config/pi-agent-extensions/permission-gate/rules.json=.
+
+* Implementation History
+
+- 2026-07-27: Prompt shows what it is blocking about on long commands —
+  command block budgeted to the terminal height, lines wrapped instead of
+  ellipsized, and the matched fragment named next to each rule label.

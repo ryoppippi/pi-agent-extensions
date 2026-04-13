@@ -22,6 +22,9 @@ import { collectPipelines, tokenize } from "./shell.ts";
  */
 export const MAX_PROJECT_MATCH_LENGTH = 512;
 
+/** Longest evidence snippet shown in the prompt (see matchEvidence). */
+const MAX_EVIDENCE_LENGTH = 200;
+
 /** All rules matching `command`. Pipelines and the decoded spelling are
  * computed lazily and at most once per call. */
 export function matchRules(command: string, rules: CompiledRule[]): CompiledRule[] {
@@ -48,4 +51,43 @@ export function matchRules(command: string, rules: CompiledRule[]): CompiledRule
 			? r.pattern.test(clip(command, r)) || r.pattern.test(clip(decode(), r))
 			: (argvPipes ??= collectPipelines(command)).some((p) => r.test(p)),
 	);
+}
+
+/**
+ * The fragment of `command` that made `rule` fire, for display in the
+ * prompt. A label alone ({@link CompiledRule.label}) answers "which rule"
+ * but not "which part of my 40-line heredoc" — and the dangerous word is
+ * routinely nowhere near the visible start of the command.
+ *
+ * Best effort by design: returns undefined when the rule cannot be
+ * attributed to a fragment (or no longer matches), and the prompt then
+ * falls back to the label. Only called when a prompt is about to be
+ * shown, so the second matching pass costs nothing in the common path.
+ */
+export function matchEvidence(command: string, rule: CompiledRule): string | undefined {
+	try {
+		if (rule.kind === "regex") {
+			// exec, not test: /g and /y carry lastIndex across calls, so the
+			// shared compiled pattern would skip or miss on alternate runs.
+			const pattern = new RegExp(rule.pattern.source, rule.pattern.flags.replace(/[gy]/g, ""));
+			const subject =
+				rule.source === "project" && command.length > MAX_PROJECT_MATCH_LENGTH
+					? command.slice(0, MAX_PROJECT_MATCH_LENGTH)
+					: command;
+			return snippet(pattern.exec(subject)?.[0]);
+		}
+		const pipeline = collectPipelines(command).find((p) => rule.test(p));
+		return snippet(pipeline?.map((argv) => argv.join(" ")).join(" | "));
+	} catch {
+		// Never let display logic break the prompt: no evidence, just the label.
+		return undefined;
+	}
+}
+
+/** One-line, bounded rendering of a matched fragment. */
+function snippet(text: string | undefined): string | undefined {
+	if (!text) return undefined;
+	const flat = text.replace(/\s+/g, " ").trim();
+	if (!flat) return undefined;
+	return flat.length > MAX_EVIDENCE_LENGTH ? `${flat.slice(0, MAX_EVIDENCE_LENGTH - 1)}…` : flat;
 }

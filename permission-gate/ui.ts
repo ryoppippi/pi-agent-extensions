@@ -3,8 +3,69 @@
  */
 
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
+import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import { EVENTS, type GateResult } from "./types.ts";
+
+/** What a rule matched, shown above the command (see match.matchEvidence). */
+export type MatchDetail = { label: string; evidence?: string };
+
+/**
+ * Lines of chrome the prompt needs around the command: header, evidence,
+ * both options, the reason editor (reserved even while it is hidden, so
+ * selecting "No" cannot reflow the block), hints, blanks — plus pi's own
+ * footer. The command block is capped at whatever is left.
+ *
+ * The cap is the whole point: pi renders the transcript and the prompt as
+ * one buffer and shows its tail, so a prompt taller than the terminal
+ * scrolls its *top* out of view — exactly the header naming the rule that
+ * fired. A long command must therefore lose lines, not the "why".
+ */
+const CHROME_LINES = 18;
+const MIN_COMMAND_LINES = 3;
+const MAX_COMMAND_LINES = 20;
+const FALLBACK_ROWS = 24;
+/** Evidence lines shown; the header still names every rule that fired. */
+const MAX_EVIDENCE_LINES = 3;
+
+/** How many display lines of the command fit without pushing out the header. */
+function commandBudget(tui: unknown, evidenceLines: number): number {
+	const rows = (tui as { terminal?: { rows?: number } })?.terminal?.rows ?? FALLBACK_ROWS;
+	return Math.max(
+		MIN_COMMAND_LINES,
+		Math.min(MAX_COMMAND_LINES, rows - CHROME_LINES - evidenceLines),
+	);
+}
+
+/** Hanging indent on wrapped continuations, so a wrapped line is not read
+ * as another statement. */
+const WRAP_INDENT = "  ";
+
+/**
+ * The command as display lines: newlines honoured, long lines wrapped
+ * (never ellipsized — a truncated tail is where the dangerous argument
+ * hides), the whole block capped at `budget` with a count of what was
+ * dropped.
+ */
+export function commandLines(
+	command: string,
+	width: number,
+	budget: number,
+): { lines: string[]; hidden: number } {
+	const wrapped: string[] = [];
+	for (const line of command.replace(/\t/g, "  ").split("\n")) {
+		// Wrapped uniformly at the narrower width: word wrapping is sequential,
+		// so a wider first line cannot be mixed in without re-flowing the rest.
+		const parts = wrapTextWithAnsi(line, Math.max(1, width - WRAP_INDENT.length));
+		if (parts.length === 0) wrapped.push("");
+		else wrapped.push(...parts.map((p, i) => (i === 0 ? p : WRAP_INDENT + p)));
+	}
+	if (wrapped.length <= budget) return { lines: wrapped, hidden: 0 };
+	// Keep the head: it carries the program being run. The dropped tail is
+	// counted, and the matched fragment is shown separately by the caller,
+	// so nothing that justifies the prompt depends on the tail.
+	const kept = Math.max(1, budget - 1);
+	return { lines: wrapped.slice(0, kept), hidden: wrapped.length - kept };
+}
 
 /**
  * Show the review prompt. Listens for EVENTS.respond on the optional event
@@ -20,6 +81,7 @@ export async function showReviewPrompt(
 		on: (name: string, handler: (payload: unknown) => void) => () => void;
 		emit: (name: string, payload?: unknown) => void;
 	},
+	matches: MatchDetail[] = [],
 ): Promise<GateResult> {
 	return ctx.ui.custom<GateResult>((tui, theme, _kb, done_) => {
 		// Unsubscribe on resolution — otherwise every prompt leaves a live
@@ -101,7 +163,19 @@ export async function showReviewPrompt(
 
 			lines.push("");
 			add(theme.fg("warning", " ⚠️ Dangerous command ") + theme.fg("muted", `(${labels})`));
-			add(` ${theme.fg("text", command)}`);
+			// What actually tripped the rule, when it is not the whole command:
+			// "recursive delete" is not an answer when the rm hides on line 30.
+			const evidence = matches
+				.filter((m) => m.evidence && m.evidence !== command.trim())
+				.slice(0, MAX_EVIDENCE_LINES);
+			for (const m of evidence) {
+				add(theme.fg("muted", `   ↳ ${m.label}: `) + theme.fg("warning", m.evidence!));
+			}
+			const cmd = commandLines(command, width - 1, commandBudget(tui, evidence.length));
+			for (const line of cmd.lines) add(` ${theme.fg("text", line)}`);
+			if (cmd.hidden > 0) {
+				add(theme.fg("dim", ` … ${cmd.hidden} more line${cmd.hidden === 1 ? "" : "s"} (not shown)`));
+			}
 			lines.push("");
 
 			const opts = ["Yes", "No"];
