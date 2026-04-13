@@ -60,8 +60,8 @@ export function matchRules(command: string, rules: CompiledRule[]): CompiledRule
  * routinely nowhere near the visible start of the command.
  *
  * Best effort by design: returns undefined when the rule cannot be
- * attributed to a fragment (or no longer matches), and the prompt then
- * falls back to the label. Only called when a prompt is about to be
+ * attributed to a fragment (or does not match on this pass), and the
+ * prompt then falls back to the label. Only called when a prompt is about to be
  * shown, so the second matching pass costs nothing in the common path.
  */
 export function matchEvidence(command: string, rule: CompiledRule): string | undefined {

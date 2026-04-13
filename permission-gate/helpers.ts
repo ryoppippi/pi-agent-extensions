@@ -3,8 +3,8 @@
  *
  * Shared by the built-in rules (builtin-rules.ts) and user rules.ts
  * factories (exposed via GateHelpers, see types.ts): user rules face the
- * same wrapper-hiding pitfalls the built-ins were hardened against, so
- * they get the same primitives instead of reimplementing them.
+ * same wrapper-hiding pitfalls as the built-ins, so they get the same
+ * primitives instead of reimplementing them.
  */
 
 import type { ArgvPipeline } from "./types.ts";

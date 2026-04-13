@@ -2,8 +2,8 @@
  * permission-gate — built-in prompt and block rules.
  *
  * Defaults are argv rules where possible: the tokenizer strips quoting,
- * env prefixes and substitutions, so `echo "sudo x"` no longer trips the
- * sudo rule while `sudo x` inside $() still does. "raw device redirect"
+ * env prefixes and substitutions, so `echo "sudo x"` does not trip the
+ * sudo rule while `sudo x` inside $() does. "raw device redirect"
  * stays regex because redirect targets are not part of argv.
  *
  * `prompt` rules ask before running; `block` rules reject outright with a

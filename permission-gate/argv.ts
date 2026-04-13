@@ -263,7 +263,7 @@ const TMUX_RUN_CMDS = new Set([
  * Shell code this command hands to *another* process to execute later
  * (task queues, terminal multiplexers). Without this the gate only sees
  * the launcher's argv and every rule is blind to the actual task — e.g.
- * `pueue add -- 'rm -rf /'` used to match nothing but the head/tail rule.
+ * `pueue add -- 'rm -rf /'` matches nothing but the head/tail rule.
  * Expects unwrapped argv; callers re-parse the results via `pipelines()`.
  */
 export function deferredScripts(argv: string[]): string[] {

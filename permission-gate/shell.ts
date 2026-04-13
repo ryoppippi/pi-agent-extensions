@@ -254,10 +254,10 @@ export function pipelines(command: string): Pipeline[] {
 export const MAX_PARSE_DEPTH = 64;
 
 /**
- * Cap on pipeline stages analyzed per pipeline. Stage handling used to be
- * quadratic (upstream prefix slices), so an 80KB `a|a|a|…` command stalled
- * the gate ~12s inside tool_call — and a hung gate is a disabled gate.
- * 512 is far beyond any legitimate pipeline.
+ * Cap on pipeline stages analyzed per pipeline. Every stage recurses into
+ * its own script sources, so an unbounded `a|a|a|…` (80KB spells ~40k
+ * stages) stalls the gate inside tool_call — and a hung gate is a disabled
+ * gate. 512 is far beyond any legitimate pipeline.
  */
 export const MAX_PIPELINE_STAGES = 512;
 
@@ -378,7 +378,7 @@ export function collectPipelines(script: string, depth = 0): ArgvPipeline[] {
 				const subPipes = sourcePipes.slice(0, c.subs.length);
 				const outSubPipes = sourcePipes.slice(c.subs.length, c.subs.length + c.outSubs.length);
 				// upstream is only consumed by the out-sub synthesis — building
-				// the prefix slice unconditionally made stage cost quadratic.
+				// the prefix slice unconditionally makes stage cost quadratic.
 				const upstream = c.outSubs.length
 					? p.slice(0, ci + 1).map((x) => x.argv).filter((argv) => argv.length)
 					: [];

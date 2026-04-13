@@ -77,10 +77,9 @@ function readJsonSafe(filePath: string, warn?: WarnFn): unknown {
 
 /**
  * Shape-check a config layer before compilation. JSON files arrive from
- * disk with arbitrary content — `{"test": true}` used to survive until
- * matchRules and throw on every bash call, and non-object
- * shapes (null file, `"disabledRules": 42`, `"extraRules": {}`) threw at
- * reload. `allowTest` is true only for code configs; JSON cannot carry
+ * disk with arbitrary content — an unchecked `{"test": true}` survives
+ * until matchRules and throws on every bash call, and non-object shapes
+ * (null file, `"disabledRules": 42`, `"extraRules": {}`) throw at reload. `allowTest` is true only for code configs; JSON cannot carry
  * functions, so any `test` there is malformed (or malicious) and the rule
  * is skipped. Never throws.
  */
