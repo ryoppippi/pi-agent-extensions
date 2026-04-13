@@ -87,18 +87,95 @@ const skipQuoted = (input: string, start: number, quote: string): number => {
 	return Math.min(j + 1, input.length);
 };
 
+// Reads a heredoc delimiter starting at `start` (first char after << or
+// <<-), returning the unquoted delimiter and the index after it. All
+// spellings collapse to the bare word: quoting only decides whether bash
+// expands the *body*, and readParenGroup copies bodies verbatim.
+const readHeredocDelim = (input: string, start: number): [string, number] => {
+	let j = start;
+	while (input[j] === " " || input[j] === "\t") j++;
+	let delim = "";
+	while (j < input.length && !" \t\n;|&<>()".includes(input[j])) {
+		const c = input[j];
+		if (c === "\\") {
+			delim += input[j + 1] ?? "";
+			j += 2;
+		} else if (c === "'" || c === '"') {
+			const end = c === "'" ? input.indexOf("'", j + 1) : skipQuoted(input, j, c) - 1;
+			const stop = end === -1 ? input.length : end;
+			delim += input.slice(j + 1, stop);
+			j = end === -1 ? input.length : stop + 1;
+		} else {
+			delim += c;
+			j++;
+		}
+	}
+	return [delim, j];
+};
+
+// Copies heredoc bodies verbatim from `start` (just after the newline that
+// ended the command line) through each pending delimiter line, returning
+// [text, nextIndex]. An unterminated body runs to the end, as in bash.
+const readHeredocBodies = (
+	input: string,
+	start: number,
+	pending: { delim: string; stripTabs: boolean }[],
+): [string, number] => {
+	let j = start;
+	let text = "";
+	for (const { delim, stripTabs } of pending) {
+		while (j < input.length) {
+			let lineEnd = input.indexOf("\n", j);
+			if (lineEnd === -1) lineEnd = input.length;
+			const line = input.slice(j, lineEnd);
+			const stop = Math.min(lineEnd + 1, input.length);
+			text += input.slice(j, stop);
+			j = stop;
+			if ((stripTabs ? line.replace(/^\t+/, "") : line) === delim) break;
+		}
+	}
+	return [text, j];
+};
+
 // Reads a parenthesized group starting at index of "(" — the body of
 // $(...), <(...) or >(...) — returning [inner, nextIndex]. Skips quoted
-// regions, backticks and comments so a `)` inside them does not affect
-// paren depth counting. Module-level (not a tokenize closure) so
-// heredocSubstitutions can reuse it on heredoc bodies.
+// regions, backticks, comments and heredoc bodies so a `)` inside them
+// does not affect paren depth counting. Module-level (not a tokenize
+// closure) so heredocSubstitutions can reuse it on heredoc bodies.
 const readParenGroup = (input: string, start: number): [string, number] => {
 	let depth = 1;
 	let j = start + 1;
 	let inner = "";
 	let atWordStart = true;
+	// Heredoc delimiters seen on the current line; their bodies are copied
+	// verbatim once the line ends.
+	const pendingHeredocs: { delim: string; stripTabs: boolean }[] = [];
 	while (j < input.length && depth > 0) {
 		const c = input[j];
+		// A heredoc body is *data*, not shell text: an apostrophe, a leading
+		// `#` or a `)` in a commit message (`git commit -m "$(cat <<'EOF' …
+		// it's … EOF\n)"`) must not open a quote, start a comment or move
+		// paren depth — any of those desyncs the reader and the substitution
+		// swallows the rest of the command line. Operator, delimiter and body
+		// are copied byte-for-byte so the re-parse of `inner` sees exactly
+		// what bash sees.
+		if (c === "<" && input[j + 1] === "<" && input[j + 2] !== "<") {
+			const stripTabs = input[j + 2] === "-";
+			const [delim, next] = readHeredocDelim(input, j + (stripTabs ? 3 : 2));
+			inner += input.slice(j, next);
+			pendingHeredocs.push({ delim, stripTabs });
+			j = next;
+			atWordStart = false;
+			continue;
+		}
+		if (c === "\n" && pendingHeredocs.length) {
+			const [body, next] = readHeredocBodies(input, j + 1, pendingHeredocs);
+			inner += `\n${body}`;
+			pendingHeredocs.length = 0;
+			j = next;
+			atWordStart = true;
+			continue;
+		}
 		if (c === "'" || c === '"' || c === "`") {
 			// no backslash escapes inside single quotes
 			const end = c === "'" ? input.indexOf("'", j + 1) : -1;

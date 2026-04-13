@@ -100,6 +100,23 @@ describe("simpleCommands: herestrings and heredocs", () => {
 		["cat <<EOF\n'$(sudo id)'\nEOF", [["cat"], ["sudo", "id"]]],
 		["cat <<EOF\n\\$(sudo id)\nEOF", [["cat"]]],
 		["cat <<\\EOF\n$(sudo id)\nEOF", [["cat"]]],
+		// a heredoc *inside* $(…) is data too: an apostrophe, a leading `#`
+		// or a `)` in the body must not open a quote, start a comment or move
+		// paren depth — a desynced reader runs the substitution past its `)`
+		// and every following word parses as garbage argv
+		[
+			"git commit -m \"$(cat <<'EOF'\nit's fine\nEOF\n)\" && ls",
+			[["git", "commit", "-m", "$(...)"], ["cat"], ["ls"]],
+		],
+		[
+			"git commit -m \"$(cat <<'EOF'\n# smiley :)\nEOF\n)\"",
+			[["git", "commit", "-m", "$(...)"], ["cat"]],
+		],
+		// …and the body still reaches the rules when it is a script
+		[
+			"echo \"$(bash <<EOF\nsudo id\nEOF\n)\"",
+			[["echo", "$(...)"], ["bash"], ["sudo", "id"]],
+		],
 	]);
 });
 

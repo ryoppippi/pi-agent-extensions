@@ -531,6 +531,15 @@ describe("heredocs and herestrings", () => {
 		// heredoc bodies are scripts exactly like a shell's
 		["source /dev/stdin <<EOF\nrm -rf /\nEOF", ["recursive delete"]],
 		[". /dev/stdin <<< 'sudo id'", ["sudo"]],
+		// `-m "$(cat <<'EOF' … EOF)"` is the standard way to write a
+		// multi-paragraph commit message: prose in the body (apostrophes,
+		// a leading `#`, an unbalanced `)`) is data, so it must not desync
+		// the substitution reader — a desync parses the following commands
+		// as one garbage word and trips "non-literal command name"
+		["git commit -m \"$(cat <<'EOF'\nit's fine (really\n# not a comment\nEOF\n)\" && git st", []],
+		["jj commit a.nix -m \"$(cat <<'EOF'\nit's fine\nEOF\n)\" | tail -2\njj st", []],
+		// …and a script body inside the substitution still matches
+		["echo \"$(bash <<EOF\nsudo rm -rf /\nEOF\n)\"", ["recursive delete", "sudo"]],
 	]);
 });
 
