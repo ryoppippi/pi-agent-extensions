@@ -414,6 +414,7 @@ For writes (or if no external viewer), shows inline TUI diff:
 - Multi-question mode with tab bar and completion indicators (■/□)
 - Free-text input option
 - Submit review screen showing all answers
+- Long prompts, options, descriptions and answers word-wrap — nothing you are asked to choose between is ever cut off with an ellipsis
 - Custom rendering in chat history
 
 *Key bindings*:
@@ -439,7 +440,8 @@ Which framework would you like to use?
   2. Vue
      Progressive framework
   3. Svelte
-     Compiled framework
+     Compiled framework, with long option labels wrapping onto the
+     next line instead of being truncated
   4. Type something.
 
 Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel

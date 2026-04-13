@@ -13,6 +13,7 @@ import {
   matchesKey,
   Text,
   truncateToWidth,
+  visibleWidth,
   wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
@@ -410,6 +411,24 @@ export default function questionnaire(pi: ExtensionAPI) {
               for (const line of wrapped) lines.push(indent + line);
             };
 
+            // Helper for a wrapped block behind a prefix (option marker,
+            // question label): the first line carries `first`, wrapped
+            // continuations are indented to line up under the text rather
+            // than under the marker. Never truncates — an option the user is
+            // asked to choose between must be readable in full, and a
+            // trailing "…" hides exactly the part that distinguishes it from
+            // its neighbour.
+            const addPrefixed = (first: string, body: string, cont?: string) => {
+              const indent = cont ?? " ".repeat(visibleWidth(first));
+              const avail = Math.max(1, width - visibleWidth(first));
+              const wrapped = wrapTextWithAnsi(body, avail);
+              if (wrapped.length === 0) {
+                lines.push(first);
+                return;
+              }
+              wrapped.forEach((line, i) => lines.push((i === 0 ? first : indent) + line));
+            };
+
             add(theme.fg("accent", "─".repeat(width)));
 
             // Tab bar (multi-question only)
@@ -454,12 +473,12 @@ export default function questionnaire(pi: ExtensionAPI) {
                 const editing = isOther && inputMode;
                 const color = selected || editing ? "accent" : "text";
                 const prefix = selected ? theme.fg("accent", "> ") : "  ";
-                add(
-                  prefix +
-                    theme.fg(color, `${marker} ${label}${editing ? " ✎" : ""}`),
+                addPrefixed(
+                  prefix + theme.fg(color, `${marker} `),
+                  theme.fg(color, `${label}${editing ? " ✎" : ""}`),
                 );
                 if (opt.description) {
-                  add(`     ${theme.fg("muted", opt.description)}`);
+                  addPrefixed("     ", theme.fg("muted", opt.description));
                 }
               });
             };
@@ -476,7 +495,7 @@ export default function questionnaire(pi: ExtensionAPI) {
                 add(` ${line}`);
               }
               lines.push("");
-              add(theme.fg("dim", " Enter to submit • Esc to cancel"));
+              addWrapped(theme.fg("dim", "Enter to submit • Esc to cancel"));
             } else if (currentTab === questions.length) {
               add(theme.fg("accent", theme.bold(" Ready to submit")));
               lines.push("");
@@ -484,10 +503,10 @@ export default function questionnaire(pi: ExtensionAPI) {
                 const answer = answers.get(question.id);
                 if (answer) {
                   const prefix = answer.wasCustom ? "(wrote) " : "";
-                  add(
-                    `${theme.fg("muted", ` ${question.label}: `)}${
-                      theme.fg("text", prefix + answer.label)
-                    }`,
+                  addPrefixed(
+                    theme.fg("muted", ` ${question.label}: `),
+                    theme.fg("text", prefix + answer.label),
+                    "   ",
                   );
                 }
               }
@@ -499,7 +518,7 @@ export default function questionnaire(pi: ExtensionAPI) {
                   .filter((q) => !answers.has(q.id))
                   .map((q) => q.label)
                   .join(", ");
-                add(theme.fg("warning", ` Unanswered: ${missing}`));
+                addPrefixed(" ", theme.fg("warning", `Unanswered: ${missing}`), "   ");
               }
             } else if (q) {
               addWrapped(theme.fg("text", q.prompt));
@@ -517,7 +536,7 @@ export default function questionnaire(pi: ExtensionAPI) {
                 mq || isMulti ? "Enter confirm" : "Enter select",
                 "Esc cancel",
               ].filter(Boolean);
-              add(theme.fg("dim", ` ${parts.join(" • ")}`));
+              addWrapped(theme.fg("dim", parts.join(" • ")));
             }
             add(theme.fg("accent", "─".repeat(width)));
 
