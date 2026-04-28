@@ -108,6 +108,14 @@ export default function questionnaire(pi: ExtensionAPI) {
       if (params.questions.length === 0) {
         return errorResult("Error: No questions provided");
       }
+      const badQ = params.questions.find(
+        (q) => q.options.length === 0 && q.allowOther === false,
+      );
+      if (badQ) {
+        return errorResult(
+          `Error: Question '${badQ.id}' has no options and allowOther is false`,
+        );
+      }
 
       // Normalize questions with defaults
       const questions: Question[] = params.questions.map((q, i) => ({
@@ -127,6 +135,7 @@ export default function questionnaire(pi: ExtensionAPI) {
           let inputMode = false;
           let inputQuestionId: string | null = null;
           let cachedLines: string[] | undefined;
+          let cachedWidth = -1;
           const answers = new Map<string, Answer>();
 
           // Editor for "Type something" option
@@ -149,11 +158,12 @@ export default function questionnaire(pi: ExtensionAPI) {
           }
 
           function submit(cancelled: boolean) {
-            done({
-              questions,
-              answers: Array.from(answers.values()),
-              cancelled,
-            });
+            // Emit answers in question order so consumers get a stable layout
+            // regardless of the order the user filled tabs.
+            const ordered = questions
+              .map((q) => answers.get(q.id))
+              .filter((a): a is Answer => a !== undefined);
+            done({ questions, answers: ordered, cancelled });
           }
 
           function currentQuestion(): Question | undefined {
@@ -299,7 +309,8 @@ export default function questionnaire(pi: ExtensionAPI) {
           }
 
           function render(width: number): string[] {
-            if (cachedLines) return cachedLines;
+            if (cachedLines && cachedWidth === width) return cachedLines;
+            cachedWidth = width;
 
             const lines: string[] = [];
             const q = currentQuestion();
