@@ -14,7 +14,7 @@ import {
   Text,
   truncateToWidth,
 } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 // Types
 interface QuestionOption {
@@ -443,7 +443,7 @@ export default function questionnaire(pi: ExtensionAPI) {
       };
     },
 
-    renderCall(args, theme) {
+    renderCall(args, theme, _context) {
       const qs = (args.questions as Question[]) || [];
       const count = qs.length;
       const labels = qs.map((q) => q.label || q.id).join(", ");
@@ -455,7 +455,7 @@ export default function questionnaire(pi: ExtensionAPI) {
       return new Text(text, 0, 0);
     },
 
-    renderResult(result, _options, theme) {
+    renderResult(result, _options, theme, _context) {
       const details = result.details as QuestionnaireResult | undefined;
       if (!details) {
         const text = result.content[0];
