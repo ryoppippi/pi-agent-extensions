@@ -163,49 +163,73 @@ Usage colours: dim when fine, yellow when >70% used, red when >90% used.
 #+html:</details>
 
 #+html:<details>
-#+html:<summary><strong>permission-gate</strong> - Configurable safety gate for dangerous commands</summary>
+#+html:<summary><strong>permission-gate</strong> - Prompt or block dangerous bash commands</summary>
 #+html:<br>
 
 - *Source*: [[https://github.com/rytswd/pi-agent-extensions/tree/main/permission-gate][permission-gate/]]
 - *License*: MIT
-- *Toggle*: =/gate=
-- *Config*: =~/.config/pi-agent-extensions/permission-gate/rules.json=
-- *Based on*: pi's [[https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/permission-gate.ts][built-in example]] and [[https://github.com/rytswd/pi-agent-extensions/pull/13][PR #13 by Mic92]]
+- *Toggle*: =/gate= (prompts only)
+- *Config*: =~/.config/pi-agent-extensions/permission-gate/rules.{ts,mjs,js,json}=
+- *Based on*: pi's [[https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/permission-gate.ts][built-in example]], [[https://github.com/rytswd/pi-agent-extensions/pull/13][PR #13]] and =block-commands= by [[https://github.com/Mic92][Mic92]]
 
-*Description*: Intercepts bash commands matching dangerous patterns and prompts for confirmation before executing. Selecting "No" opens an inline editor to tell the assistant /why/ — the reason is fed back as the block message. Configurable rules with project-local overrides (addressing [[https://github.com/rytswd/pi-agent-extensions/issues/4][#4]]).
+*Description*: Intercepts bash tool calls matching configurable rules. Each rule chooses an action: =prompt= shows a Yes/No dialog (No opens an inline editor for a free-text reason fed back to the model); =block= rejects outright with a fixed reason. Rules match either the raw command string (regex) or tokenized *pipelines of argv arrays* via a bundled zero-dependency shell tokenizer — quoting, =VAR== prefixes, =$()= / =<()=, heredocs and redirects are handled, so =echo "sudo x"= no longer trips the sudo rule while =$(sudo id)= still does.
 
-*Features*:
-- *Default rules*: =rm -rf=, =sudo=, =git push -f=, =git reset --hard=, =curl|sh=, =gh repo/release=, and more
-- *Free-text rejection reason*: Tell the assistant why you blocked the command
-- *Configurable*: Add/remove rules via =/gate add= and =/gate rm=, or edit =rules.json= directly
-- *Project-local overrides*: =<cwd>/.pi/permission-gate.json= for project-specific rules
-- *Fallback safety*: If all user rules fail to compile, defaults are restored automatically
+*Built-in prompt rules*: =rm -r=, =sudo=, =chmod 777=, => /dev/sdX=, =git push -f=, =git reset --hard=, =git clean -f=, =git checkout .=, =git restore=, =curl|sh=, =gh repo/release= mutations.
 
-*Config file* (=rules.json=):
+*Built-in block rules* (stay active when prompting is off):
+- =find= / =fd= / =rg= / =grep= over =/=, =$HOME=, =/nix/store= — too slow / millions of files
+- =nix flake show= — evaluates every output; suggests =nix eval --apply=
+- =pueue add -- '... | tail'= — hides live output; suggests =pueue follow= / =pueue log --lines N=
+
+Path rules know each tool's CLI, so =rg '/nix/store' file.txt= passes but =rg foo /nix/store= is blocked.
+
+*Config* — merge order: built-ins ← user =rules.{ts,mjs,js}= ← user =rules.json= ← project =.pi/permission-gate.json=. Later layers may =disabledRules= earlier ones by label. Project-level code config is refused (would execute untrusted repo code). =/gate add|rm= write to =rules.json=, so they keep working alongside a hand-edited =rules.ts=.
+
+=rules.ts= may export a plain object or a factory receiving ={ simpleCommands, pipelines, searchPaths }=:
+
+#+begin_src typescript
+  export default ({ simpleCommands }) => ({
+    extraRules: [
+      { label: "docker rm", pattern: /\bdocker\s+rm\b/, action: "prompt" },
+      {
+        label: "kubectl delete prod",
+        action: "block",
+        reason: "Use the deploy pipeline.",
+        test: (pipe) => pipe.some((argv) =>
+          argv[0] === "kubectl" && argv[1] === "delete" && argv.includes("prod"),
+        ),
+      },
+    ],
+    disabledRules: ["sudo", "pueue tail"],
+  });
+#+end_src
+
+=rules.json= (also what =/gate add|rm= writes):
 
 #+begin_src json
   {
     "extraRules": [
-      { "pattern": "\\bdocker\\s+rm\\b", "label": "docker remove" }
+      { "label": "npm publish", "pattern": "\\bnpm\\s+publish\\b", "action": "block", "reason": "use CI" }
     ],
     "disabledRules": ["sudo"]
   }
 #+end_src
 
-=rules= replaces all built-in rules. =extraRules= appends. =disabledRules= disables by label. Each rule supports an optional =flags= field (default: =i= for case-insensitive).
+=rules= replaces the built-in /prompt/ defaults; block defaults are only removable via =disabledRules=. =extraRules= appends.
 
 *Commands*:
-| Command               | Action                                |
-|-----------------------+---------------------------------------|
-| =/gate=               | Toggle on/off                         |
-| =/gate list= (=ls=)   | Show active rules (grouped by source) |
-| =/gate add=           | Add a rule interactively              |
-| =/gate remove= (=rm=) | Remove a rule by label                |
+| Command               | Action                                          |
+|-----------------------+-------------------------------------------------|
+| =/gate=               | Toggle prompting (block rules unaffected)       |
+| =/gate list= (=ls=)   | Show active rules (grouped by source, =[block]= tag) |
+| =/gate add=           | Add a regex rule (prompt or block) → =rules.json= |
+| =/gate remove= (=rm=) | Remove/disable a rule by label → =rules.json=   |
+| =/gate reload=        | Re-import config, recompile                     |
 
 *Environment variables*:
-| Variable         | Description                          |
-|------------------+--------------------------------------|
-| =PI_NO_GATE=1=   | Disable the extension at startup      |
+| Variable        | Description                                            |
+|-----------------+--------------------------------------------------------|
+| =PI_NO_GATE=1=  | Disable the extension entirely (prompts and block rules) |
 
 #+html:</details>
 
@@ -548,7 +572,7 @@ pi
 
 *** Try the Extensions
 
-- *permission-gate:* Enabled by default — =/gate= to toggle, =/gate rules= to see active rules
+- *permission-gate:* Prompts on =rm -r= / =git push -f= / …, hard-blocks whole-tree =find= / =rg= scans — =/gate list= to see rules
 - *stash:* Press =Alt+S= to stash editor text, =Alt+S= again to restore
 - *notify:* Desktop notification when agent finishes — =/notify= to toggle
 - *slow-mode:* Type =/slow-mode= to toggle the review gate
