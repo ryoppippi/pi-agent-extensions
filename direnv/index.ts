@@ -78,30 +78,45 @@ export default function (pi: ExtensionAPI) {
 		if (reloadTimer) clearTimeout(reloadTimer);
 		reloadTimer = setTimeout(() => {
 			reloadTimer = null;
-			if (latestCtx) loadDirenv(latestCtx.cwd, latestCtx);
+			if (!latestCtx) return;
+			loadDirenv(latestCtx.cwd, latestCtx);
+			// Re-arm watchers: one may have died with an "error" event, and
+			// .envrc / .direnv may have appeared since the last arm.
+			startWatchers(latestCtx.cwd);
 		}, RELOAD_DEBOUNCE_MS);
+	}
+
+	function armWatcher(path: string): void {
+		try {
+			const w = watch(path, () => scheduleReload());
+			// FSWatcher emits "error" asynchronously, e.g. when a watched
+			// entry vanishes mid-event (Bun's watcher can hit ENOENT when
+			// nix-direnv replaces its .direnv/flake-profile-* gc root).
+			// Without a listener that becomes an uncaughtException and
+			// takes down the whole agent. Close the dead watcher and
+			// schedule a reload, which also re-arms the watchers.
+			w.on("error", () => {
+				try {
+					w.close();
+				} catch {
+					/* ignore */
+				}
+				scheduleReload();
+			});
+			watchers.push(w);
+		} catch {
+			// path may not exist (yet) — that's fine
+		}
 	}
 
 	function startWatchers(cwd: string): void {
 		stopWatchers();
 
 		// Watch .envrc — covers edits and direnv allow (which rewrites .envrc state)
-		const envrcPath = join(cwd, ".envrc");
-		try {
-			const w = watch(envrcPath, () => scheduleReload());
-			watchers.push(w);
-		} catch {
-			// .envrc may not exist — that's fine
-		}
+		armWatcher(join(cwd, ".envrc"));
 
 		// Watch .direnv/ — covers flake rebuilds, nix develop, direnv allow state
-		const direnvDir = join(cwd, ".direnv");
-		try {
-			const w = watch(direnvDir, () => scheduleReload());
-			watchers.push(w);
-		} catch {
-			// .direnv/ may not exist yet — that's fine
-		}
+		armWatcher(join(cwd, ".direnv"));
 	}
 
 	function stopWatchers(): void {
