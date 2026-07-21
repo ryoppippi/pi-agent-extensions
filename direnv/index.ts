@@ -64,6 +64,10 @@ export default function (pi: ExtensionAPI) {
 		exportRunning = true;
 		exec("direnv export json", { cwd }, (error, stdout, stderr) => {
 			exportRunning = false;
+			// The session may have shut down while the export ran; don't
+			// touch the UI or re-arm watchers after stopWatchers() already
+			// cleaned up — they would leak until process exit.
+			if (!latestCtx) return;
 			if (error) {
 				const message = (stderr || error.message).toLowerCase();
 				updateStatus(ctx, /allow|blocked|denied|not allowed/.test(message) ? "blocked" : "error");
