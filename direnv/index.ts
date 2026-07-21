@@ -1,8 +1,16 @@
 /**
  * Direnv Extension
  *
- * Loads direnv environment variables on session start, then watches
- * .envrc and .direnv/ for changes and reloads only when needed.
+ * Loads direnv environment variables on session start, then watches the
+ * files direnv itself tracks (.envrc, watch_file entries, direnv allow
+ * state, ...) and reloads only when one of them changes.
+ *
+ * The watch list is decoded from DIRENV_WATCHES with `direnv show_dump`,
+ * so it always matches direnv's own invalidation rules. Watching
+ * .direnv/ instead would feed back into itself: a stale-cache
+ * `direnv export` (nix-direnv) rewrites .direnv/, re-triggering the
+ * watcher while the previous export is still running. Combined with a
+ * slow nix eval this spawns unbounded concurrent evals.
  *
  * The bash tool spawns a new process per command (no persistent shell),
  * so the working directory never changes between bash calls. Running
@@ -14,7 +22,7 @@
  *   - .envrc must be allowed (run `direnv allow` in your shell first)
  */
 
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { type FSWatcher, watch } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -28,6 +36,12 @@ export default function (pi: ExtensionAPI) {
 	let watchers: FSWatcher[] = [];
 	let reloadTimer: ReturnType<typeof setTimeout> | null = null;
 	let latestCtx: ExtensionContext | null = null;
+	// A stale nix-direnv cache turns `direnv export` into a full nix
+	// eval that can run for minutes. Never run more than one export at
+	// a time; coalesce triggers that arrive meanwhile into a single
+	// re-run once the current one finishes.
+	let exportRunning = false;
+	let exportPending = false;
 
 	function updateStatus(ctx: ExtensionContext, status: Status): void {
 		if (!ctx.hasUI) return;
@@ -43,32 +57,44 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function loadDirenv(cwd: string, ctx: ExtensionContext): void {
+		if (exportRunning) {
+			exportPending = true;
+			return;
+		}
+		exportRunning = true;
 		exec("direnv export json", { cwd }, (error, stdout, stderr) => {
+			exportRunning = false;
+			// The session may have shut down while the export ran; don't
+			// touch the UI or re-arm watchers after stopWatchers() already
+			// cleaned up — they would leak until process exit.
+			if (!latestCtx) return;
 			if (error) {
 				const message = (stderr || error.message).toLowerCase();
 				updateStatus(ctx, /allow|blocked|denied|not allowed/.test(message) ? "blocked" : "error");
-				return;
-			}
-
-			if (!stdout.trim()) {
+			} else if (!stdout.trim()) {
 				updateStatus(ctx, "off");
-				return;
-			}
-
-			try {
-				const env = JSON.parse(stdout) as Record<string, string | null>;
-				let loadedCount = 0;
-				for (const [key, value] of Object.entries(env)) {
-					if (value === null) {
-						delete process.env[key];
-					} else {
-						process.env[key] = value;
-						loadedCount++;
+			} else {
+				try {
+					const env = JSON.parse(stdout) as Record<string, string | null>;
+					let loadedCount = 0;
+					for (const [key, value] of Object.entries(env)) {
+						if (value === null) {
+							delete process.env[key];
+						} else {
+							process.env[key] = value;
+							loadedCount++;
+						}
 					}
+					updateStatus(ctx, loadedCount > 0 ? "on" : "off");
+				} catch {
+					updateStatus(ctx, "error");
 				}
-				updateStatus(ctx, loadedCount > 0 ? "on" : "off");
-			} catch {
-				updateStatus(ctx, "error");
+			}
+			// The export may have changed DIRENV_WATCHES; re-arm from it.
+			startWatchers(cwd);
+			if (exportPending) {
+				exportPending = false;
+				scheduleReload();
 			}
 		});
 	}
@@ -79,10 +105,8 @@ export default function (pi: ExtensionAPI) {
 		reloadTimer = setTimeout(() => {
 			reloadTimer = null;
 			if (!latestCtx) return;
+			// Watchers are re-armed when the export finishes.
 			loadDirenv(latestCtx.cwd, latestCtx);
-			// Re-arm watchers: one may have died with an "error" event, and
-			// .envrc / .direnv may have appeared since the last arm.
-			startWatchers(latestCtx.cwd);
 		}, RELOAD_DEBOUNCE_MS);
 	}
 
@@ -90,11 +114,10 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const w = watch(path, () => scheduleReload());
 			// FSWatcher emits "error" asynchronously, e.g. when a watched
-			// entry vanishes mid-event (Bun's watcher can hit ENOENT when
-			// nix-direnv replaces its .direnv/flake-profile-* gc root).
-			// Without a listener that becomes an uncaughtException and
-			// takes down the whole agent. Close the dead watcher and
-			// schedule a reload, which also re-arms the watchers.
+			// entry vanishes mid-event. Without a listener that becomes an
+			// uncaughtException and takes down the whole agent. Close the
+			// dead watcher and schedule a reload, which also re-arms the
+			// watchers.
 			w.on("error", () => {
 				try {
 					w.close();
@@ -109,14 +132,35 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	/**
+	 * Resolve the paths direnv itself watches for invalidation (.envrc,
+	 * allow/deny state, watch_file entries, ...). Falls back to .envrc
+	 * when DIRENV_WATCHES is not loaded yet or cannot be decoded.
+	 */
+	function watchedPaths(cwd: string, cb: (paths: string[]) => void): void {
+		const dump = process.env.DIRENV_WATCHES;
+		if (!dump) {
+			cb([join(cwd, ".envrc")]);
+			return;
+		}
+		execFile("direnv", ["show_dump", dump], (error, stdout) => {
+			try {
+				if (error) throw error;
+				const entries = JSON.parse(stdout) as { path: string }[];
+				cb(entries.map((e) => e.path));
+			} catch {
+				cb([join(cwd, ".envrc")]);
+			}
+		});
+	}
+
 	function startWatchers(cwd: string): void {
-		stopWatchers();
-
-		// Watch .envrc — covers edits and direnv allow (which rewrites .envrc state)
-		armWatcher(join(cwd, ".envrc"));
-
-		// Watch .direnv/ — covers flake rebuilds, nix develop, direnv allow state
-		armWatcher(join(cwd, ".direnv"));
+		watchedPaths(cwd, (paths) => {
+			stopWatchers();
+			for (const path of paths) {
+				armWatcher(path);
+			}
+		});
 	}
 
 	function stopWatchers(): void {
@@ -128,20 +172,22 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		watchers = [];
-		if (reloadTimer) {
-			clearTimeout(reloadTimer);
-			reloadTimer = null;
-		}
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		latestCtx = ctx;
+		// Watchers are armed when the export finishes, from the
+		// DIRENV_WATCHES it produces.
 		loadDirenv(ctx.cwd, ctx);
-		startWatchers(ctx.cwd);
 	});
 
 	pi.on("session_shutdown", async () => {
 		stopWatchers();
+		if (reloadTimer) {
+			clearTimeout(reloadTimer);
+			reloadTimer = null;
+		}
+		exportPending = false;
 		latestCtx = null;
 	});
 
@@ -150,7 +196,6 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			latestCtx = ctx;
 			loadDirenv(ctx.cwd, ctx);
-			startWatchers(ctx.cwd);
 			if (ctx.hasUI) ctx.ui.notify("direnv reloaded", "info");
 		},
 	});
