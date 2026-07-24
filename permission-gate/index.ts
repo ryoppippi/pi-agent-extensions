@@ -1,18 +1,20 @@
 /**
  * permission-gate — confirm or block dangerous bash commands before they run.
  *
- * Rules match either the raw command string (regex) or tokenized pipelines
- * of argv arrays (see shell.ts), and choose an action:
- *   - "prompt": show Yes/No with a free-text rejection reason (fed back to
- *     the model). Toggle with /gate or PI_NO_GATE=1.
- *   - "block":  reject outright with a fixed reason. Stays active when
- *     /gate turns prompting off; disable via `disabledRules` or PI_NO_GATE=1.
+ * Every bash command is parsed into the programs it actually runs (see
+ * shell.ts) and checked against the rules. A matching rule does one of:
+ *   - "prompt": show a Yes/No dialog; No accepts an optional reason that
+ *     is sent back to the model. Toggle prompting with /gate.
+ *   - "block":  reject outright and tell the model why. Stays active even
+ *     when /gate turns prompting off.
+ * PI_NO_GATE=1 turns the whole extension off.
  *
- * Config (merge order, later layers may disable earlier ones by label):
- *   built-ins
- *   ~/.config/pi-agent-extensions/permission-gate/rules.{ts,mjs,js}  (user code, optional)
- *   ~/.config/pi-agent-extensions/permission-gate/rules.json         (user JSON — /gate add|rm write here)
- *   <cwd>/.pi/permission-gate.json                                   (project JSON only)
+ * Configuration is read from four places, in order (each can add rules or
+ * turn off earlier ones); see config.ts for the trust rules per place:
+ *   1. the built-in rules
+ *   2. ~/.config/pi-agent-extensions/permission-gate/rules.ts (or .mjs / .js)
+ *   3. ~/.config/pi-agent-extensions/permission-gate/rules.json  (written by /gate)
+ *   4. <cwd>/.pi/permission-gate.json                            (project, untrusted)
  *
  * Based on pi's built-in permission-gate example, PR #13, and the
  * block-commands extension by Mic92 (github.com/Mic92/dotfiles).

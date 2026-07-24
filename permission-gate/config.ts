@@ -1,13 +1,19 @@
 /**
  * permission-gate — config loading, compilation and persistence.
  *
- * Merge order (later layers may disable earlier ones by label):
- *   built-ins ← user rules.{ts,mjs,js} ← user rules.json ← project .pi/permission-gate.json
+ * Configuration is read from four places, in order. Each place can add
+ * rules or turn off rules that came from an earlier place:
  *
- * rules.{ts,mjs,js} is user-scope only. A project-level .ts is refused
- * because importing it would run untrusted repo code on session_start.
- * The project JSON is untrusted for the same reason: its disabledRules
- * never remove block rules, and whatever it does disable is warned about.
+ *   1. the built-in rules
+ *   2. the user's rules.ts (or .mjs / .js) in the config directory
+ *   3. the user's rules.json in the config directory (written by /gate)
+ *   4. the project's .pi/permission-gate.json in the working directory
+ *
+ * The user files (2, 3) are trusted. The project file (4) ships with the
+ * repository, so it is not: it may add rules and turn off ordinary prompt
+ * rules (the user is notified), but it can never turn off block rules
+ * or the parser safety limits. A project rules.ts is refused entirely,
+ * since importing it would run untrusted repository code on session start.
  */
 
 import * as fs from "node:fs";
@@ -152,7 +158,7 @@ export function sanitizeConfig(raw: unknown, origin: string, allowTest: boolean,
 }
 
 /**
- * Import rules.{ts,mjs,js}. Tries pi's bundled jiti first (handles .ts and
+ * Import the user's rules.ts / .mjs / .js. Tries pi's bundled jiti first (handles .ts and
  * gives fresh evaluation for /gate reload); falls back to native import()
  * with a cache-busting query. Returns {} on failure with a warning.
  */
@@ -194,7 +200,7 @@ export interface ConfigLayers {
 	userCode: GateConfig;
 	userJson: GateConfig;
 	project: GateConfig;
-	/** Path of the active rules.{ts,mjs,js}, if any. */
+	/** Path of the user's rules code file (rules.ts, .mjs or .js), if any. */
 	userCodePath?: string;
 }
 
