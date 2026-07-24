@@ -190,7 +190,7 @@ Rules are organized into seven groups. Turn a whole group off with =/gate off <g
 | =privilege= | sudo, doas, pkexec, su                                                  | =sudo id=                   |
 | =files=     | recursive deletes, world-writable chmod                                 | =rm -rf dir=                |
 | =device=    | writes to raw devices (redirect, dd, mkfs, …)                           | => /dev/sda=                |
-| =vcs=       | destructive git, jj and gh operations                                  | =git push -f=, =jj abandon= |
+| =vcs=       | destructive git, jj and gh operations                                  | =git push -f=, =jj op abandon= |
 | =exec=      | fetching and executing remote or piped scripts                         | =curl … pipe sh=            |
 | =scan=      | whole-tree scans and =nix flake show= (these block, not prompt)        | =rg foo /nix/store=         |
 | =guard=     | parser safety limits and the gate protecting its own config           | =$a id=                     |

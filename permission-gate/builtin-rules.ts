@@ -301,29 +301,23 @@ export const DEFAULT_PROMPT_RULES: RuleEntry[] = [
 		group: "vcs", test: gitSub("reset", (a) => a.includes("--hard")) },
 	// jj peers of the git rules above — same blast radius, jj spelling.
 	// Everyday history rewriting (squash, rebase, describe) stays clean:
-	// it is jj's normal workflow and recoverable via the op log.
+	//
+	// jj: local operations (abandon, restore, op restore, squash,
+	// rebase, ...) are all undoable through the op log, so none of them
+	// prompt. Only what escapes that safety net does: destroying op log
+	// history itself, and deletions on the remote where no op log exists.
 	{
-		label: "jj abandon",
+		label: "jj op abandon",
 		group: "vcs",
-		// Abandons commits outright; recoverable only until the op log rotates.
-		test: jjSub("abandon"),
-	},
-	{
-		label: "jj restore",
-		group: "vcs",
-		// Discards working-copy or commit changes, like git restore.
-		test: jjSub("restore"),
-	},
-	{
-		label: "jj op restore",
-		group: "vcs",
-		// Rewinds the whole repo to an earlier operation — hard reset's cousin.
-		test: jjSub("op restore"),
+		// Discards op log entries — the recovery mechanism for every
+		// other jj operation.
+		test: jjSub("op abandon"),
 	},
 	{
 		label: "jj push deletion",
 		group: "vcs",
-		// Deleting remote bookmarks, the jj spelling of `git push -d`.
+		// Deleting remote bookmarks (the jj spelling of `git push -d`); the
+		// remote has no op log to restore from.
 		test: jjSub("git push", (a) => hasFlag(a, "d", "--deleted") || a.includes("--delete")),
 	},
 	{ label: "git clean",

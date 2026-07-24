@@ -301,23 +301,23 @@ describe("destructive git and GitHub operations", () => {
 		["git push origin +main", ["force push"]],
 		["git push origin '+refs/heads/x:refs/heads/x'", ["force push"]],
 		["git push origin main", []],
-		// jj peers: same blast radius, jj spelling. Everyday history editing
-		// (squash, rebase, describe, new) is jj's normal workflow — stays clean.
-		["jj abandon", ["jj abandon"]],
-		["jj abandon xyz", ["jj abandon"]],
-		["jj -R /repo abandon", ["jj abandon"]],
-		["jj restore", ["jj restore"]],
-		["jj restore --from x", ["jj restore"]],
-		["jj op restore abc123", ["jj op restore"]],
+		// jj: everything local is undoable through the op log, so it stays
+		// clean. Only what escapes that safety net prompts: destroying op
+		// log history (op abandon) and remote deletion (git push -d).
+		["jj op abandon abc123", ["jj op abandon"]],
+		["jj -R /repo op abandon abc123", ["jj op abandon"]],
 		["jj git push --deleted", ["jj push deletion"]],
 		["jj git push -d main", ["jj push deletion"]],
 		["jj git push", []],
+		["jj abandon xyz", []], // recoverable via the op log
+		["jj restore --from x", []],
+		["jj op restore abc123", []], // rewinds, but the op log still holds it
+		["jj undo", []],
 		["jj squash", []],
 		["jj rebase -d main", []],
 		["jj describe -m x", []],
 		["jj new", []],
 		["jj op log", []],
-		["jj undo", []], // single-step, itself undoable — deliberately clean
 		// remote branch deletion — force push's sibling, in both spellings
 		["git push -d origin topic", ["delete remote branch"]],
 		["git push --delete origin topic", ["delete remote branch"]],
@@ -1407,7 +1407,7 @@ describe("rule groups", () => {
 		const rules = compileRules({ userCode: {}, userJson: { disabledGroups: ["vcs"] }, project: {} });
 		expect(rules.some((r) => r.group === "vcs")).toBe(false);
 		expect(matchRules("git push -f", rules)).toEqual([]);
-		expect(matchRules("jj abandon", rules)).toEqual([]);
+		expect(matchRules("jj op abandon", rules)).toEqual([]);
 		// other groups untouched
 		expect(matchRules("sudo id", rules).map((r) => r.label)).toEqual(["sudo"]);
 	});
