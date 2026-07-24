@@ -19,39 +19,29 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, BashToolCallEvent } from "@mariozechner/pi-coding-agent";
-import type { ArgvPipeline, CompiledRule, GateHelpers, WarnFn } from "./types.ts";
+import { EVENTS, type CompiledRule, type GateHelpers, type WarnFn } from "./types.ts";
 import { searchPaths } from "./builtin-rules.ts";
-import { pipelines, simpleCommands } from "./shell.ts";
+import { anyCmd, hasFlag } from "./helpers.ts";
+import { deferredScripts, nestedScripts, pipelines, SHELLS, simpleCommands, unwrap, unwrapSteps } from "./shell.ts";
+import { matchRules } from "./match.ts";
 import { compileRules, type ConfigLayers, loadConfig, saveUserJson } from "./config.ts";
 import { showReviewPrompt } from "./ui.ts";
 
-const GATE_SUBCMDS = "list(ls)|add|remove(rm)|reload";
-const HELPERS: GateHelpers = { simpleCommands, pipelines, searchPaths };
-
-// ── matching ─────────────────────────────────────────────────────────────
-
-/** Pipelines as argv lists, recursing into command/process substitutions. */
-function collectPipelines(script: string): ArgvPipeline[] {
-	return pipelines(script).flatMap((p) => [
-		p.map((c) => c.argv).filter((argv) => argv.length),
-		...p.flatMap((c) => c.subs.flatMap(collectPipelines)),
-	]).filter((p) => p.length);
-}
-
-function matchRules(command: string, rules: CompiledRule[]): CompiledRule[] {
-	let argvPipes: ArgvPipeline[] | undefined;
-	return rules.filter((r) =>
-		r.kind === "regex"
-			? r.pattern.test(command)
-			: (argvPipes ??= collectPipelines(command)).some((p) => r.test(p)),
-	);
-}
+const GATE_SUBCMDS = "list(ls)|off <group>|on <group>|add|remove(rm)|reload";
+const HELPERS: GateHelpers = {
+	simpleCommands, pipelines, searchPaths,
+	unwrap, unwrapSteps, nestedScripts, deferredScripts,
+	anyCmd, hasFlag, SHELLS,
+};
 
 // ── extension ────────────────────────────────────────────────────────────
 
 export default function permissionGate(pi: ExtensionAPI) {
-	// PI_NO_GATE disables the extension entirely (prompts and block rules).
-	if (process.env.PI_NO_GATE) return;
+	// PI_NO_GATE=1 disables the extension entirely (prompts and block
+	// rules). Exact match on "1": treating any non-empty value as a
+	// disable made PI_NO_GATE=0 turn the gate off — the standard env-var
+	// footgun, and this one is a kill switch.
+	if (process.env.PI_NO_GATE === "1") return;
 
 	let promptsEnabled = true;
 	let layers: ConfigLayers = { userCode: {}, userJson: {}, project: {} };
@@ -62,16 +52,21 @@ export default function permissionGate(pi: ExtensionAPI) {
 		ctx.ui.setStatus("gate", ctx.ui.theme.fg("dim", promptsEnabled ? "\uf132 gate" : "\uf132 block"));
 	}
 
-	async function reloadRules(cwd: string, warn?: WarnFn): Promise<void> {
+	async function reloadRules(cwd: string, warn: WarnFn | undefined, headless: boolean): Promise<void> {
 		layers = await loadConfig(cwd, HELPERS, warn);
-		rules = compileRules(layers, warn);
+		rules = compileRules(layers, warn, { headless });
 	}
 
 	// ── events ───────────────────────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
-		const warn: WarnFn = (msg) => ctx.hasUI ? ctx.ui.notify(msg, "warning") : undefined;
-		await reloadRules(ctx.cwd, warn);
+		// Headless the warn channel is stderr — a no-op here let a repo-shipped
+		// config neuter every prompt rule with zero record. compileRules also
+		// refuses project prompt-disables entirely when headless (prompts
+		// hard-block without a UI, so disabling one escalates, not softens).
+		const warn: WarnFn = (msg) =>
+			ctx.hasUI ? ctx.ui.notify(msg, "warning") : console.error(msg);
+		await reloadRules(ctx.cwd, warn, !ctx.hasUI);
 		updateStatus(ctx);
 	});
 
@@ -80,7 +75,19 @@ export default function permissionGate(pi: ExtensionAPI) {
 		const command = (event as BashToolCallEvent).input.command;
 		if (!command) return undefined;
 
-		const matched = matchRules(command, rules);
+		// A throwing rule must fail *closed* — without this guard a malformed
+		// project config errored every bash call through pi's tool plumbing
+		// instead of blocking cleanly, and the handler contract is "never
+		// throw" (loadConfig sanitizes; this is defense in depth).
+		let matched: CompiledRule[];
+		try {
+			matched = matchRules(command, rules);
+		} catch (err) {
+			if (ctx.hasUI) {
+				ctx.ui.notify(`permission-gate: rule evaluation failed: ${(err as Error).message}`, "warning");
+			}
+			return { block: true, reason: "Blocked: permission-gate rule evaluation failed — fix the gate config (see /gate list) and retry" };
+		}
 		if (matched.length === 0) return undefined;
 
 		// Block wins over prompt and ignores the /gate toggle.
@@ -97,9 +104,11 @@ export default function permissionGate(pi: ExtensionAPI) {
 			return { block: true, reason: `Dangerous command blocked (${labels}) — no UI` };
 		}
 
-		pi.events.emit("permission-gate:waiting", { command, labels });
+		// showReviewPrompt emits EVENTS.waiting itself, *after* arming its
+		// EVENTS.respond listener — emitting it here lost the answer of any
+		// responder that reacted synchronously.
 		const result = await showReviewPrompt(ctx, command, labels, pi.events);
-		pi.events.emit("permission-gate:resolved");
+		pi.events.emit(EVENTS.resolved);
 
 		return result.allow ? undefined : { block: true, reason: result.reason };
 	});
@@ -109,6 +118,8 @@ export default function permissionGate(pi: ExtensionAPI) {
 	pi.registerCommand("gate", {
 		description: `Permission gate — toggle prompts or manage rules: /gate [${GATE_SUBCMDS}]`,
 		handler: async (args, ctx) => {
+			// Every branch below talks to the UI; headless/RPC callers get a no-op.
+			if (!ctx.hasUI) return;
 			const sub = args?.trim().toLowerCase() ?? "";
 			const warn: WarnFn = (msg) => ctx.ui.notify(msg, "warning");
 
@@ -126,21 +137,50 @@ export default function permissionGate(pi: ExtensionAPI) {
 			}
 
 			if (sub === "list" || sub === "ls") {
-				const groups: Record<string, string[]> = {};
+				// Grouped by the coarse dial users actually turn (`/gate off vcs`),
+				// not by config source; non-built-in rules note their source inline.
+				const byGroup: Record<string, string[]> = {};
 				for (const r of rules) {
-					const tag = r.action === "block" ? "[block] " : "";
-					(groups[r.source] ??= []).push(`${tag}${r.label}`);
+					const tags = [
+						r.action === "block" ? "[block]" : "",
+						r.source !== "built-in" ? `[${r.source}]` : "",
+					].filter(Boolean).join(" ");
+					(byGroup[r.group ?? "custom"] ??= []).push(tags ? `${r.label} ${tags}` : r.label);
 				}
-				const sections = Object.entries(groups).map(([source, labels]) => {
-					const heading = source.charAt(0).toUpperCase() + source.slice(1);
-					return `${heading} (${labels.length}):\n${labels.map((l) => `  • ${l}`).join("\n")}`;
-				});
+				const off = [
+					...(layers.userJson.disabledGroups ?? []),
+					...(layers.userCode.disabledGroups ?? []),
+				];
+				const sections = Object.entries(byGroup).map(([group, labels]) =>
+					`${group} (${labels.length}):\n${labels.map((l) => `  • ${l}`).join("\n")}`,
+				);
+				if (off.length) sections.push(`off: ${[...new Set(off)].join(", ")}`);
 				ctx.ui.notify(sections.join("\n\n") || "No active rules", "info");
 				return;
 			}
 
+			// `/gate off vcs` / `/gate on vcs` — the coarse dial. Writes
+			// disabledGroups in the user rules.json so it persists.
+			const [verb, groupArg] = sub.split(/\s+/, 2);
+			if ((verb === "off" || verb === "on") && groupArg) {
+				const cfg = layers.userJson;
+				const current = new Set(cfg.disabledGroups ?? []);
+				if (verb === "off") current.add(groupArg);
+				else current.delete(groupArg);
+				cfg.disabledGroups = [...current];
+				saveUserJson(cfg, warn);
+				await reloadRules(ctx.cwd, warn, false);
+				ctx.ui.notify(
+					verb === "off"
+						? `Group "${groupArg}" disabled (${rules.length} rule(s) active)`
+						: `Group "${groupArg}" enabled (${rules.length} rule(s) active)`,
+					"info",
+				);
+				return;
+			}
+
 			if (sub === "reload") {
-				await reloadRules(ctx.cwd, warn);
+				await reloadRules(ctx.cwd, warn, false);
 				const src = layers.userCodePath ? ` from ${layers.userCodePath}` : "";
 				ctx.ui.notify(`Reloaded ${rules.length} rule(s)${src}`, "info");
 				return;
@@ -163,9 +203,9 @@ export default function permissionGate(pi: ExtensionAPI) {
 					: undefined;
 				const cfg = layers.userJson;
 				cfg.extraRules = [...(cfg.extraRules ?? []), { pattern, label, action, ...(reason ? { reason } : {}) }];
-				saveUserJson(cfg);
-				await reloadRules(ctx.cwd, warn);
-				ctx.ui.notify(`Rule added: ${label}`, "info");
+				const saved = saveUserJson(cfg, warn);
+				await reloadRules(ctx.cwd, warn, false);
+				if (saved) ctx.ui.notify(`Rule added: ${label}`, "info");
 				return;
 			}
 
@@ -176,16 +216,20 @@ export default function permissionGate(pi: ExtensionAPI) {
 				if (!choice) return;
 
 				const cfg = layers.userJson;
-				const target = rules.find((r) => r.label === choice);
+				// Prefer the user-json rule when labels collide — /gate rm must
+				// splice the user's own rule, not disable a built-in that happens
+				// to share its label.
+				const target = rules.find((r) => r.label === choice && r.source === "user-json")
+					?? rules.find((r) => r.label === choice);
 				const idx = (cfg.extraRules ?? []).findIndex((r) => r.label === choice);
 				if (target?.source === "user-json" && idx >= 0) {
 					cfg.extraRules!.splice(idx, 1);
 				} else {
 					cfg.disabledRules = [...new Set([...(cfg.disabledRules ?? []), choice])];
 				}
-				saveUserJson(cfg);
-				await reloadRules(ctx.cwd, warn);
-				ctx.ui.notify(`Rule removed: ${choice}`, "info");
+				const saved = saveUserJson(cfg, warn);
+				await reloadRules(ctx.cwd, warn, false);
+				if (saved) ctx.ui.notify(`Rule removed: ${choice}`, "info");
 				return;
 			}
 

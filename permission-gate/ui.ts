@@ -4,29 +4,48 @@
 
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
-import type { GateResult } from "./types.ts";
+import { EVENTS, type GateResult } from "./types.ts";
 
 /**
- * Show the review prompt. Also listens for `permission-gate:respond` on the
- * optional event bus so external callers (e.g. Telegram) can dismiss it.
+ * Show the review prompt. Listens for EVENTS.respond on the optional event
+ * bus so external callers (e.g. Telegram) can dismiss it, and emits
+ * EVENTS.waiting once that listener is armed — in that order, so even a
+ * responder reacting synchronously to `waiting` cannot lose its answer.
  */
 export async function showReviewPrompt(
 	ctx: ExtensionContext,
 	command: string,
 	labels: string,
-	events?: { on: (name: string, handler: (payload: unknown) => void) => unknown },
+	events?: {
+		on: (name: string, handler: (payload: unknown) => void) => () => void;
+		emit: (name: string, payload?: unknown) => void;
+	},
 ): Promise<GateResult> {
-	return ctx.ui.custom<GateResult>((tui, theme, _kb, done) => {
+	return ctx.ui.custom<GateResult>((tui, theme, _kb, done_) => {
+		// Unsubscribe on resolution — otherwise every prompt leaves a live
+		// listener behind and one remote respond answers all past prompts.
+		let offRespond: (() => void) | undefined;
+		const done = (result: GateResult) => {
+			offRespond?.();
+			offRespond = undefined;
+			done_(result);
+		};
 		if (events) {
-			events.on("permission-gate:respond", (payload) => {
+			offRespond = events.on(EVENTS.respond, (payload) => {
 				const p = payload as { allow?: boolean; reason?: string } | undefined;
 				const allow = p?.allow === true;
 				const reason = allow ? "" : (p?.reason ?? `Blocked remotely (${labels})`);
 				done(allow ? { allow: true } : { allow: false, reason });
 			});
+			// Announce the prompt only after the respond listener exists.
+			events.emit(EVENTS.waiting, { command, labels });
 		}
+		// Two options, no modes. The cursor starts on "Yes": the gate is a
+		// confirmation layer, not a barrier, so the reflexive Enter approves.
+		// Moving to "No" reveals the reason editor right there — typing is
+		// optional, Enter blocks either way. Esc blocks from anywhere with no
+		// input at all.
 		let optionIndex = 0;
-		let inputMode = false;
 		let cachedLines: string[] | undefined;
 
 		const editorTheme: EditorTheme = {
@@ -54,33 +73,25 @@ export async function showReviewPrompt(
 		};
 
 		function handleInput(data: string) {
-			if (inputMode) {
-				if (matchesKey(data, Key.escape)) {
-					inputMode = false;
-					editor.setText("");
-					refresh();
-					return;
-				}
-				editor.handleInput(data);
-				refresh();
+			// Esc always blocks, from either option, with no input required.
+			if (matchesKey(data, Key.escape)) {
+				done({ allow: false, reason: `Blocked by user (${labels})` });
 				return;
 			}
 
-			if (matchesKey(data, Key.up)) { optionIndex = 0; refresh(); return; }
-			if (matchesKey(data, Key.down)) { optionIndex = 1; refresh(); return; }
-			if (matchesKey(data, Key.enter)) {
-				if (optionIndex === 0) {
-					done({ allow: true });
-				} else {
-					inputMode = true;
-					editor.setText("");
-					refresh();
-				}
+			if (optionIndex === 0) {
+				if (matchesKey(data, Key.down)) { optionIndex = 1; refresh(); return; }
+				if (matchesKey(data, Key.enter)) done({ allow: true });
 				return;
 			}
-			if (matchesKey(data, Key.escape)) {
-				done({ allow: false, reason: `Blocked by user (${labels})` });
-			}
+
+			// "No" selected: the editor is live. Up returns to Yes (text kept in
+			// case the user comes back); everything else — including the Enter
+			// that submits via editor.onSubmit — goes to the editor.
+			if (matchesKey(data, Key.up)) { optionIndex = 0; refresh(); return; }
+			if (matchesKey(data, Key.down)) return;
+			editor.handleInput(data);
+			refresh();
 		}
 
 		function render(width: number): string[] {
@@ -93,20 +104,20 @@ export async function showReviewPrompt(
 			add(` ${theme.fg("text", command)}`);
 			lines.push("");
 
-			const opts = ["Yes", inputMode ? "No ✎" : "No"];
+			const opts = ["Yes", "No"];
 			for (let i = 0; i < opts.length; i++) {
 				const sel = i === optionIndex;
 				add(`${sel ? theme.fg("accent", " > ") : "   "}${theme.fg(sel ? "accent" : "text", opts[i])}`);
 			}
 			lines.push("");
 
-			if (inputMode) {
-				add(theme.fg("muted", " Reason:"));
+			if (optionIndex === 1) {
+				add(theme.fg("muted", " Reason (optional):"));
 				for (const line of editor.render(width - 2)) add(` ${line}`);
 				lines.push("");
-				add(theme.fg("dim", " Enter submit • Esc back"));
+				add(theme.fg("dim", " Enter block • ↑ Yes • Esc block"));
 			} else {
-				add(theme.fg("dim", " ↑↓ • Enter • Esc block"));
+				add(theme.fg("dim", " Enter allow • ↓ No • Esc block"));
 			}
 			lines.push("");
 
