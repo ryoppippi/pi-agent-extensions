@@ -12,6 +12,7 @@ This is **pi-agent-extensions** — a collection of [pi](https://github.com/mari
 
 | File | Description |
 |------|-------------|
+| `permission-gate/` | Prompt or block dangerous bash commands (regex or tokenized-argv rules) |
 | `statusline/` | Condensed status bar: model, usage, context, VCS (git/jj), cost |
 | `direnv/` | Loads direnv environment variables on session start and after bash commands |
 | `fetch/` | HTTP request tool — fetches URLs, downloads files, shows curl equivalent |

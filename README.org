@@ -163,49 +163,125 @@ Usage colours: dim when fine, yellow when >70% used, red when >90% used.
 #+html:</details>
 
 #+html:<details>
-#+html:<summary><strong>permission-gate</strong> - Configurable safety gate for dangerous commands</summary>
+#+html:<summary><strong>permission-gate</strong> - Prompt or block dangerous bash commands</summary>
 #+html:<br>
 
 - *Source*: [[https://github.com/rytswd/pi-agent-extensions/tree/main/permission-gate][permission-gate/]]
 - *License*: MIT
-- *Toggle*: =/gate=
-- *Config*: =~/.config/pi-agent-extensions/permission-gate/rules.json=
-- *Based on*: pi's [[https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/permission-gate.ts][built-in example]] and [[https://github.com/rytswd/pi-agent-extensions/pull/13][PR #13 by Mic92]]
+- *Toggle*: =/gate= (turns prompting off/on; block rules stay active)
+- *Config*: =~/.config/pi-agent-extensions/permission-gate/=
+- *Based on*: pi's [[https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/permission-gate.ts][built-in example]], [[https://github.com/rytswd/pi-agent-extensions/pull/13][PR #13]] and =block-commands= by [[https://github.com/Mic92][Mic92]]
 
-*Description*: Intercepts bash commands matching dangerous patterns and prompts for confirmation before executing. Selecting "No" opens an inline editor to tell the assistant /why/ — the reason is fed back as the block message. Configurable rules with project-local overrides (addressing [[https://github.com/rytswd/pi-agent-extensions/issues/4][#4]]).
+*What it does*
 
-*Features*:
-- *Default rules*: =rm -rf=, =sudo=, =git push -f=, =git reset --hard=, =curl|sh=, =gh repo/release=, and more
-- *Free-text rejection reason*: Tell the assistant why you blocked the command
-- *Configurable*: Add/remove rules via =/gate add= and =/gate rm=, or edit =rules.json= directly
-- *Project-local overrides*: =<cwd>/.pi/permission-gate.json= for project-specific rules
-- *Fallback safety*: If all user rules fail to compile, defaults are restored automatically
+Every bash command the agent wants to run is checked against a list of rules first. When a rule matches, one of two things happens:
 
-*Config file* (=rules.json=):
+- *prompt* — a Yes/No dialog appears. Yes is preselected, so Enter allows the command. Esc blocks it instantly. Moving the cursor to No shows a text field where you can type an optional reason; that reason is sent back to the agent, and Enter blocks the command.
+- *block* — the command is rejected outright and the agent is told why. No dialog.
+
+Rules understand shell syntax rather than matching text blindly. The extension parses each command into the programs it actually runs, so =echo "sudo x"= does /not/ trip the sudo rule (it only prints), while =$(sudo id)= does (it runs sudo). Quoting, environment prefixes, pipes, heredocs and command substitution are all handled.
+
+*The built-in rules*
+
+Rules are organized into seven groups. Turn a whole group off with =/gate off <group>= rather than editing rules one by one:
+
+| Group       | Covers                                                                  | Example                     |
+|-------------+-------------------------------------------------------------------------+-----------------------------|
+| =privilege= | sudo, doas, pkexec, su                                                  | =sudo id=                   |
+| =files=     | recursive deletes, world-writable chmod                                 | =rm -rf dir=                |
+| =device=    | writes to raw devices (redirect, dd, mkfs, …)                           | => /dev/sda=                |
+| =vcs=       | destructive git, jj and gh operations                                  | =git push -f=, =jj op abandon= |
+| =exec=      | fetching and executing remote or piped scripts                         | =curl … pipe sh=            |
+| =scan=      | whole-tree scans and =nix flake show= (these block, not prompt)        | =rg foo /nix/store=         |
+| =guard=     | parser safety limits and the gate protecting its own config           | =$a id=                     |
+
+Three of the groups block instead of prompting, because they protect the agent from itself rather than protecting you:
+
+- scanning =/=, =$HOME= or =/nix/store= with =find= / =fd= / =rg= / =grep= — too slow, or millions of files
+- =nix flake show= — evaluates every output; use =nix eval --apply= instead
+- =pueue add -- '... | tail'= — hides live output; use =pueue follow= or =pueue log --lines N=
+
+The scan rules understand each tool's options, so =rg '/nix/store' file.txt= (searching for the string) is fine, while =rg foo /nix/store= (searching the whole store) is blocked.
+
+*Configuration*
+
+Configuration is read from four places, in order. Each one can add rules or turn off rules that came from an earlier place:
+
+1. the built-in rules
+2. your rules file: =rules.ts= (or =.mjs= / =.js=) in the config directory
+3. your rules file: =rules.json= in the config directory — this is what the =/gate= commands write
+4. the project's rules file: =.pi/permission-gate.json= in the working directory
+
+The project file (4) is treated as untrusted, because it ships with the repository. It may add rules and turn off ordinary prompt rules (you are notified when it does), but it can never turn off the block rules or the parser safety limits, and it can never load code. A =.pi/permission-gate.ts= is refused for that last reason.
+
+To turn rules off, list them by name in =disabledRules= or turn off a whole group in =disabledGroups=. To add rules, use =extraRules=. To replace the built-in prompt rules entirely, use =rules= (the block rules stay unless you also disable them).
+
+=rules.json= — plain data, and what =/gate add=, =/gate rm= and =/gate off= write:
 
 #+begin_src json
   {
     "extraRules": [
-      { "pattern": "\\bdocker\\s+rm\\b", "label": "docker remove" }
+      { "label": "npm publish", "pattern": "\\bnpm\\s+publish\\b", "action": "block", "reason": "use CI" }
     ],
+    "disabledGroups": ["vcs"],
     "disabledRules": ["sudo"]
   }
 #+end_src
 
-=rules= replaces all built-in rules. =extraRules= appends. =disabledRules= disables by label. Each rule supports an optional =flags= field (default: =i= for case-insensitive).
+=rules.ts= — for rules that need real logic. Export an object, or a function that receives helpers such as =anyCmd= and =searchPaths=:
 
-*Commands*:
-| Command               | Action                                |
-|-----------------------+---------------------------------------|
-| =/gate=               | Toggle on/off                         |
-| =/gate list= (=ls=)   | Show active rules (grouped by source) |
-| =/gate add=           | Add a rule interactively              |
-| =/gate remove= (=rm=) | Remove a rule by label                |
+#+begin_src typescript
+  export default ({ anyCmd }) => ({
+    extraRules: [
+      // regex on the raw command string
+      { label: "docker rm", pattern: /\bdocker\s+rm\b/ },
+      // predicate on the parsed command — no false positives from quoting
+      {
+        label: "kubectl delete prod",
+        action: "block",
+        reason: "Use the deploy pipeline.",
+        test: (pipeline) => anyCmd(pipeline, "kubectl", (args) =>
+          args[0] === "delete" && args.includes("prod")),
+      },
+    ],
+    disabledRules: ["sudo"],
+  });
+#+end_src
 
-*Environment variables*:
-| Variable         | Description                          |
-|------------------+--------------------------------------|
-| =PI_NO_GATE=1=   | Disable the extension at startup      |
+*Known limits*
+
+This is a confirmation layer over bash /syntax/, not a sandbox. Examples of commands it will NOT catch:
+
+- =rg foo /nix/store$x= — variable values at argument position are not tracked
+- =cd / && rg foo .= — each command is checked on its own; the working directory is not modeled
+- =python3 -c 'os.system("rm -rf /")'= — any interpreter runs code the gate cannot read
+- =ssh host 'rm -rf /'= — the command runs on another machine
+- =crontab -= — the payload runs later, under cron
+- =curl -o x.sh https://…; sh x.sh= — file contents are never read back
+- =GIT_PAGER='rm -rf /' git log= — execution through environment variables (=git -c core.pager=…= is caught, the environment spelling is not)
+- =valgrind rm -rf /= — only common wrappers (sudo, env, timeout, …) are seen through; obscure launchers hide what follows
+- =bash <(echo rm -rf /)= — only =curl=/=wget= and =base64= producers are tracked into shells
+- =echo 'export PI_NO_GATE=1' >> ~/.bashrc= — persisting the kill switch through shell startup files
+
+Anything that must never run needs an OS-level sandbox, not a rule.
+
+*Commands*
+
+| Command               | Action                                                |
+|-----------------------+-------------------------------------------------------|
+| =/gate=               | Toggle prompting on/off (block rules unaffected)      |
+| =/gate list= (=ls=)   | Show the active rules, grouped                        |
+| =/gate off <group>=   | Turn a rule group off (saved to =rules.json=)         |
+| =/gate on <group>=    | Turn a rule group back on                             |
+| =/gate add=           | Add a regex rule interactively (saved to =rules.json=) |
+| =/gate remove= (=rm=) | Remove or disable a rule by name                      |
+| =/gate reload=        | Re-read the config files                              |
+
+*Environment variables*
+
+| Variable       | Description                                                                          |
+|----------------+--------------------------------------------------------------------------------|
+| =PI_NO_GATE=1= | Turn the extension off entirely (prompts and block rules). Only the exact value =1= counts. |
 
 #+html:</details>
 
@@ -548,7 +624,7 @@ pi
 
 *** Try the Extensions
 
-- *permission-gate:* Enabled by default — =/gate= to toggle, =/gate rules= to see active rules
+- *permission-gate:* Prompts on =rm -r= / =git push -f= / …, hard-blocks whole-tree =find= / =rg= scans — =/gate list= to see rules
 - *stash:* Press =Alt+S= to stash editor text, =Alt+S= again to restore
 - *notify:* Desktop notification when agent finishes — =/notify= to toggle
 - *slow-mode:* Type =/slow-mode= to toggle the review gate
