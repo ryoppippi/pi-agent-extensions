@@ -37,9 +37,14 @@ interface RepoInfo {
 }
 
 const repoByCwd = new Map<string, RepoInfo | null>();
+const REPO_CREATION_RETRY_MS = 60_000;
+let retryMissingReposUntil = 0;
 
 function detectRepo(cwd: string): RepoInfo | null {
-	if (repoByCwd.has(cwd)) return repoByCwd.get(cwd)!;
+	if (repoByCwd.has(cwd)) {
+		const cached = repoByCwd.get(cwd)!;
+		if (cached || Date.now() >= retryMissingReposUntil) return cached;
+	}
 	let info: RepoInfo | null = null;
 	// Walk up to find a repo root. jj repos colocate .git so check .jj first.
 	let dir = cwd;
@@ -61,6 +66,7 @@ function detectRepo(cwd: string): RepoInfo | null {
 		dir = parent;
 	}
 	repoByCwd.set(cwd, info);
+	if (info) retryMissingReposUntil = 0;
 	return info;
 }
 
@@ -115,7 +121,18 @@ export function invalidateVcs(): void {
 	cachedRepoKey = undefined;
 	cachedStatus = undefined;
 	repoByCwd.clear();
+	retryMissingReposUntil = 0;
 	seq++;
+}
+
+/**
+ * User-bash events fire before the command runs. While a repository-creation
+ * command is in progress, avoid retaining a negative lookup so the host's
+ * completion render can discover the newly created repository.
+ */
+export function invalidateVcsForRepoCreation(): void {
+	invalidateVcs();
+	retryMissingReposUntil = Date.now() + REPO_CREATION_RETRY_MS;
 }
 
 function run(cmd: string, args: string[], cwd: string, timeoutMs = 300): Promise<string | null> {

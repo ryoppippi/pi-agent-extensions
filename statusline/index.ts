@@ -11,7 +11,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme, ReadonlyFooterDataProvider } from "@mariozechner/pi-coding-agent";
 import { loadSettings, saveSettings, clearCache } from "./src/settings.js";
 import { renderBar, buildBarContext, invalidateVcs, setExtensionStatuses } from "./src/bar.js";
-import { setVcsUpdateCallback } from "./src/vcs.js";
+import { invalidateVcsForRepoCreation, setVcsUpdateCallback } from "./src/vcs.js";
 import { detectProvider, createUsageController, setApiKeyResolver, resetRateLimit } from "./src/providers.js";
 import { getCached } from "./src/cache.js";
 
@@ -148,6 +148,12 @@ export default function statusline(pi: ExtensionAPI) {
 		return VCS_CHANGE_PATTERNS.some((p) => p.test(cmd));
 	}
 
+	function mightCreateRepo(cmd: string): boolean {
+		// Accept common global-option forms such as `git -C . init` and
+		// `git -c init.defaultBranch=main init` without attempting shell parsing.
+		return /\b(?:git|jj)\b[^\n;|&]*\sinit(?=\s|$)/.test(cmd);
+	}
+
 	// ── Events ───────────────────────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -194,8 +200,13 @@ export default function statusline(pi: ExtensionAPI) {
 	});
 
 	pi.on("user_bash", async (event) => {
-		if (mightChangeVcs(event.command)) {
-			invalidateVcs();
+		const createsRepo = mightCreateRepo(event.command);
+		if (createsRepo || mightChangeVcs(event.command)) {
+			// user_bash is emitted before execution. For init, keep negative repo
+			// lookups transient so the host's command-completion render can detect
+			// the repository even when the command takes longer than these redraws.
+			if (createsRepo) invalidateVcsForRepoCreation();
+			else invalidateVcs();
 			setTimeout(() => tuiRef?.requestRender(), 150);
 			setTimeout(() => tuiRef?.requestRender(), 500);
 		}
