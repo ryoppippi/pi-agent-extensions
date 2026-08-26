@@ -40,7 +40,17 @@ function sessionStashPath(sessionId: string): string {
 
 // ── Extension ────────────────────────────────────────────────────────────
 
-export default function stash(pi: ExtensionAPI) {
+export interface StashStorage {
+	load(filePath: string, rootDir: string): string[];
+	save(filePath: string, stashes: string[], rootDir: string): void;
+}
+
+const defaultStorage: StashStorage = {
+	load: loadStashFile,
+	save: saveStashFile,
+};
+
+export default function stash(pi: ExtensionAPI, storage: StashStorage = defaultStorage) {
 	let sessionStashes: string[] = [];
 	let globalStashes: string[] = [];
 	let sessionId = "";
@@ -75,7 +85,7 @@ export default function stash(pi: ExtensionAPI) {
 			return false;
 		}
 		try {
-			saveStashFile(sessionStashPath(sessionId), sessionStashes, dataDir());
+			storage.save(sessionStashPath(sessionId), sessionStashes, dataDir());
 			return true;
 		} catch (error) {
 			persistenceError(ctx, "Session", "was not saved", error);
@@ -89,7 +99,7 @@ export default function stash(pi: ExtensionAPI) {
 			return false;
 		}
 		try {
-			saveStashFile(globalStashPath(), globalStashes, dataDir());
+			storage.save(globalStashPath(), globalStashes, dataDir());
 			return true;
 		} catch (error) {
 			persistenceError(ctx, "Global", "was not saved", error);
@@ -100,7 +110,7 @@ export default function stash(pi: ExtensionAPI) {
 	/** Reload global stash from disk (picks up changes from other sessions). */
 	function syncGlobal(ctx: ExtensionContext): boolean {
 		try {
-			globalStashes = loadStashFile(globalStashPath());
+			globalStashes = storage.load(globalStashPath(), dataDir());
 			globalLoadFailed = false;
 			return true;
 		} catch (error) {
@@ -395,7 +405,7 @@ export default function stash(pi: ExtensionAPI) {
 		// file that could not be read or parsed; treating it as empty would turn
 		// the next save into silent data loss.
 		try {
-			sessionStashes = loadStashFile(sessionStashPath(sessionId));
+			sessionStashes = storage.load(sessionStashPath(sessionId), dataDir());
 			sessionLoadFailed = false;
 		} catch (error) {
 			sessionStashes = [];
@@ -403,7 +413,7 @@ export default function stash(pi: ExtensionAPI) {
 			persistenceError(ctx, "Session", "could not be loaded", error);
 		}
 		try {
-			globalStashes = loadStashFile(globalStashPath());
+			globalStashes = storage.load(globalStashPath(), dataDir());
 			globalLoadFailed = false;
 		} catch (error) {
 			globalStashes = [];

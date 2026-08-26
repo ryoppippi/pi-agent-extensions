@@ -5,7 +5,16 @@ import { randomUUID } from "node:crypto";
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 
-export function loadStashFile(filePath: string): string[] {
+function repairExistingModes(filePath: string, rootDir: string): void {
+	if (fs.existsSync(rootDir)) fs.chmodSync(rootDir, DIRECTORY_MODE);
+
+	const dir = path.dirname(filePath);
+	if (dir !== rootDir && fs.existsSync(dir)) fs.chmodSync(dir, DIRECTORY_MODE);
+	if (fs.existsSync(filePath)) fs.chmodSync(filePath, FILE_MODE);
+}
+
+export function loadStashFile(filePath: string, rootDir = path.dirname(filePath)): string[] {
+	repairExistingModes(filePath, rootDir);
 	if (!fs.existsSync(filePath)) return [];
 	const data: unknown = JSON.parse(fs.readFileSync(filePath, "utf-8"));
 	if (!Array.isArray(data) || !data.every((value) => typeof value === "string")) {

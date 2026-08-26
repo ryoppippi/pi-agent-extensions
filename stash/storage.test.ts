@@ -30,7 +30,7 @@ test("atomically stores valid JSON with private file and directory modes", () =>
 	expect(readFileSync(file, "utf-8")).toBe('[\n  "first",\n  "second"\n]\n');
 });
 
-test("repairs modes on existing stash paths", () => {
+test("repairs modes on existing stash paths when saving", () => {
 	const parent = tempRoot();
 	const root = join(parent, "stash");
 	const file = join(root, "global.json");
@@ -43,6 +43,23 @@ test("repairs modes on existing stash paths", () => {
 	expect(statSync(root).mode & 0o777).toBe(0o700);
 	expect(statSync(file).mode & 0o777).toBe(0o600);
 	expect(loadStashFile(file)).toEqual(["new"]);
+});
+
+test("repairs modes on existing stash paths when loading", () => {
+	const parent = tempRoot();
+	const root = join(parent, "stash");
+	const sessions = join(root, "sessions");
+	const file = join(sessions, "one.json");
+
+	saveStashFile(file, ["existing"], root);
+	chmodSync(root, 0o775);
+	chmodSync(sessions, 0o775);
+	chmodSync(file, 0o664);
+
+	expect(loadStashFile(file, root)).toEqual(["existing"]);
+	expect(statSync(root).mode & 0o777).toBe(0o700);
+	expect(statSync(sessions).mode & 0o777).toBe(0o700);
+	expect(statSync(file).mode & 0o777).toBe(0o600);
 });
 
 test("rejects malformed stash data instead of treating it as empty", () => {
