@@ -192,7 +192,7 @@ export default function statusline(pi: ExtensionAPI) {
 		}
 		if (event.toolName === "bash" && (event.input as any)?.command) {
 			const cmd = String((event.input as any).command);
-			if (mightChangeVcs(cmd)) {
+			if (mightCreateRepo(cmd) || mightChangeVcs(cmd)) {
 				invalidateVcs();
 				setTimeout(() => tuiRef?.requestRender(), 100);
 			}
