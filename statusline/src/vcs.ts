@@ -77,8 +77,8 @@ interface Counts {
  * (and thus writing) the index, so a status display cannot contend with jj
  * over .git/index or strand an index.lock if we time out mid-call.
  */
-async function gitCounts(): Promise<Counts | null> {
-	const porcelain = await run("git", ["--no-optional-locks", "status", "--porcelain"], 500);
+async function gitCounts(cwd: string): Promise<Counts | null> {
+	const porcelain = await run("git", ["--no-optional-locks", "status", "--porcelain"], cwd, 500);
 	if (porcelain === null) return null;
 	let modified = 0;
 	let added = 0;
@@ -101,8 +101,9 @@ async function gitCounts(): Promise<Counts | null> {
 	return { modified, added, removed };
 }
 
+let cachedRepoKey: string | undefined;
 let cachedStatus: VcsStatus | null | undefined;
-let inflight = false;
+let inflightSeq: number | undefined;
 let seq = 0;
 let onUpdate: (() => void) | null = null;
 
@@ -111,11 +112,13 @@ export function setVcsUpdateCallback(cb: (() => void) | null): void {
 }
 
 export function invalidateVcs(): void {
+	cachedRepoKey = undefined;
 	cachedStatus = undefined;
+	repoByCwd.clear();
 	seq++;
 }
 
-function run(cmd: string, args: string[], timeoutMs = 300): Promise<string | null> {
+function run(cmd: string, args: string[], cwd: string, timeoutMs = 300): Promise<string | null> {
 	return new Promise((resolve) => {
 		let stdout = "";
 		let resolved = false;
@@ -128,7 +131,7 @@ function run(cmd: string, args: string[], timeoutMs = 300): Promise<string | nul
 		// detached: the child leads its own process group, so the timeout below
 		// can signal the entire tree. Without it we can only reach the direct
 		// child, and any grandchild it is blocked on survives us.
-		const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"], detached: true });
+		const proc = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "ignore"], detached: true });
 		proc.stdout.on("data", (d) => (stdout += d.toString()));
 		proc.on("close", (code) => finish(code === 0 ? stdout.trim() : null));
 		proc.on("error", () => finish(null));
@@ -174,7 +177,7 @@ function run(cmd: string, args: string[], timeoutMs = 300): Promise<string | nul
 
 // ── jj ───────────────────────────────────────────────────────────────────
 
-async function fetchJj(colocated: boolean): Promise<VcsStatus | null> {
+async function fetchJj(repo: RepoInfo): Promise<VcsStatus | null> {
 	// --ignore-working-copy keeps this read-only. Without it, every render
 	// snapshots the working copy, which rewrites the working-copy commit --
 	// and under signing.behavior="own" a rewrite means a GPG signature, so a
@@ -191,7 +194,7 @@ async function fetchJj(colocated: boolean): Promise<VcsStatus | null> {
 		"1",
 		"-T",
 		'change_id.shortest() ++ "\\x00" ++ bookmarks.join(",") ++ "\\x00" ++ description.first_line()',
-	]);
+	], repo.root);
 	if (logLine === null) return null;
 
 	const [changeId, bookmarksStr, _desc] = logLine.split("\0");
@@ -205,15 +208,15 @@ async function fetchJj(colocated: boolean): Promise<VcsStatus | null> {
 	// `@-`, its output describes the same range jj would -- current, and with
 	// no write to the jj repo at all. Falls back to jj if git is unavailable
 	// or times out, trading freshness for a number rather than showing none.
-	let counts: Counts | null = colocated ? await gitCounts() : null;
-	if (!counts) counts = await jjCounts();
+	let counts: Counts | null = repo.colocated ? await gitCounts(repo.root) : null;
+	if (!counts) counts = await jjCounts(repo.root);
 
 	return { kind: "jj", head, ...counts };
 }
 
 /** Counts from the last snapshot. Stale by construction -- see fetchJj. */
-async function jjCounts(): Promise<Counts> {
-	const status = await run("jj", ["diff", "--ignore-working-copy", "--summary"], 500);
+async function jjCounts(cwd: string): Promise<Counts> {
+	const status = await run("jj", ["diff", "--ignore-working-copy", "--summary"], cwd, 500);
 	let modified = 0;
 	let added = 0;
 	let removed = 0;
@@ -231,25 +234,23 @@ async function jjCounts(): Promise<Counts> {
 
 // ── git ──────────────────────────────────────────────────────────────────
 
-async function fetchGit(): Promise<VcsStatus | null> {
-	const branch = await run("git", ["branch", "--show-current"]);
+async function fetchGit(cwd: string): Promise<VcsStatus | null> {
+	const branch = await run("git", ["branch", "--show-current"], cwd);
 	if (branch === null) return null;
 
 	let head = branch;
 	if (!head) {
-		const sha = await run("git", ["rev-parse", "--short", "HEAD"]);
+		const sha = await run("git", ["rev-parse", "--short", "HEAD"], cwd);
 		head = sha ? `${sha} (detached)` : "detached";
 	}
 
-	const counts = (await gitCounts()) ?? { modified: 0, added: 0, removed: 0 };
+	const counts = (await gitCounts(cwd)) ?? { modified: 0, added: 0, removed: 0 };
 
 	return { kind: "git", head, ...counts };
 }
 
-async function fetchVcsStatus(cwd: string): Promise<VcsStatus | null> {
-	const repo = detectRepo(cwd);
-	if (!repo) return null;
-	return repo.kind === "jj" ? fetchJj(repo.colocated) : fetchGit();
+async function fetchVcsStatus(repo: RepoInfo): Promise<VcsStatus | null> {
+	return repo.kind === "jj" ? fetchJj(repo) : fetchGit(repo.root);
 }
 
 /**
@@ -257,12 +258,21 @@ async function fetchVcsStatus(cwd: string): Promise<VcsStatus | null> {
  * invalidateVcs(). Renders never block — they read whatever is cached.
  */
 export function getVcsStatus(cwd: string): VcsStatus | null {
-	if (detectRepo(cwd) === null) return null;
-	if (cachedStatus === undefined && !inflight) {
-		inflight = true;
+	const repo = detectRepo(cwd);
+	if (!repo) return null;
+
+	const repoKey = `${repo.kind}:${repo.root}`;
+	if (cachedRepoKey !== repoKey) {
+		cachedRepoKey = repoKey;
+		cachedStatus = undefined;
+		seq++;
+	}
+
+	if (cachedStatus === undefined && inflightSeq !== seq) {
 		const mySeq = seq;
-		void fetchVcsStatus(cwd).then((result) => {
-			inflight = false;
+		inflightSeq = mySeq;
+		void fetchVcsStatus(repo).then((result) => {
+			if (inflightSeq === mySeq) inflightSeq = undefined;
 			if (mySeq !== seq) return;
 			cachedStatus = result;
 			onUpdate?.();

@@ -139,7 +139,7 @@ export default function statusline(pi: ExtensionAPI) {
 	// ── VCS invalidation on file changes ─────────────────────────────────
 
 	const VCS_CHANGE_PATTERNS = [
-		/\b(git|jj)\s+(checkout|switch|branch|merge|rebase|pull|reset|new|edit|abandon|squash|split|move|bookmark)\b/,
+		/\b(git|jj)\s+(init|checkout|switch|branch|merge|rebase|pull|reset|new|edit|abandon|squash|split|move|bookmark)\b/,
 		/\bjj\s+(describe|commit|undo|restore)\b/,
 		/\bgit\s+stash\s+(pop|apply)\b/,
 	];
